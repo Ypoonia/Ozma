@@ -6,16 +6,17 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from importlib.resources import files
 from typing import Any, Optional, Tuple
+
+from doc_analyse.prompt.loader import (
+    PromptTemplateError,
+    load_default_classification_prompt,
+    load_default_system_prompt,
+    render_classification_prompt,
+)
 
 VALID_VERDICTS = {"safe", "suspicious", "unsafe"}
 VALID_SEVERITIES = {"low", "medium", "high", "critical"}
-PROMPT_PACKAGE = "doc_analyse.prompt"
-SYSTEM_PROMPT_FILE = "system.md"
-CLASSIFICATION_PROMPT_FILE = "classification.md"
-TEXT_PLACEHOLDER = "{{ text }}"
-METADATA_PLACEHOLDER = "{{ metadata }}"
 
 
 @dataclass(frozen=True)
@@ -91,8 +92,7 @@ class ClassifierResponseError(ValueError):
     pass
 
 
-class ClassifierPromptError(RuntimeError):
-    pass
+ClassifierPromptError = PromptTemplateError
 
 
 class BaseClassifier(ABC):
@@ -113,12 +113,8 @@ class BaseClassifier(ABC):
 
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.system_prompt = resolve_prompt_text(system_prompt, SYSTEM_PROMPT_FILE)
-        self.user_prompt_template = resolve_prompt_text(
-            user_prompt_template,
-            CLASSIFICATION_PROMPT_FILE,
-            required_placeholders=(TEXT_PLACEHOLDER, METADATA_PLACEHOLDER),
-        )
+        self.system_prompt = load_default_system_prompt(system_prompt)
+        self.user_prompt_template = load_default_classification_prompt(user_prompt_template)
 
     @property
     def provider(self) -> str:
@@ -138,7 +134,7 @@ class BaseClassifier(ABC):
         text: str,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> Tuple[ClassifierMessage, ...]:
-        user_prompt = render_prompt_template(
+        user_prompt = render_classification_prompt(
             self.user_prompt_template,
             text=text,
             metadata=metadata or {},
@@ -167,60 +163,6 @@ class BaseClassifier(ABC):
 
 def render_messages_for_single_prompt(messages: Sequence[ClassifierMessage]) -> str:
     return "\n\n".join(f"{message.role.upper()}:\n{message.content}" for message in messages)
-
-
-def resolve_prompt_text(
-    prompt_text: Optional[str],
-    default_filename: str,
-    required_placeholders: Sequence[str] = (),
-) -> str:
-    if prompt_text is None:
-        prompt_text = load_prompt_template(default_filename)
-
-    prompt_text = require_prompt_text(default_filename, prompt_text)
-    missing_placeholders = [
-        placeholder for placeholder in required_placeholders if placeholder not in prompt_text
-    ]
-    if missing_placeholders:
-        missing = ", ".join(missing_placeholders)
-        raise ClassifierPromptError(
-            f"Prompt template '{default_filename}' is missing required placeholder(s): {missing}"
-        )
-
-    return prompt_text
-
-
-def load_prompt_template(filename: str) -> str:
-    try:
-        # Prompt text lives in markdown resources so reviewers can change behavior
-        # without editing provider or verifier code.
-        prompt_text = files(PROMPT_PACKAGE).joinpath(filename).read_text(encoding="utf-8")
-    except (FileNotFoundError, ModuleNotFoundError) as exc:
-        raise ClassifierPromptError(f"Prompt template '{filename}' could not be loaded.") from exc
-
-    return require_prompt_text(filename, prompt_text)
-
-
-def render_prompt_template(
-    prompt_template: str,
-    text: str,
-    metadata: Mapping[str, Any],
-) -> str:
-    if not isinstance(text, str) or not text.strip():
-        raise ClassifierPromptError("Classifier input text must be a non-empty string.")
-
-    return (
-        prompt_template.replace(METADATA_PLACEHOLDER, _format_metadata(metadata))
-        .replace(TEXT_PLACEHOLDER, text)
-        .strip()
-    )
-
-
-def require_prompt_text(prompt_name: str, prompt_text: Any) -> str:
-    if not isinstance(prompt_text, str) or not prompt_text.strip():
-        raise ClassifierPromptError(f"Prompt template '{prompt_name}' is empty.")
-
-    return prompt_text.strip()
 
 
 def ensure_api_key(
@@ -252,13 +194,6 @@ def require_text_response(provider_name: str, text: Any) -> str:
         raise ClassifierResponseError(f"{provider_name} returned no text content.")
 
     return text.strip()
-
-
-def _format_metadata(metadata: Mapping[str, Any]) -> str:
-    if not metadata:
-        return "none"
-
-    return "\n".join(f"- {key}: {value}" for key, value in metadata.items())
 
 
 def _extract_json_object(raw_response: str) -> str:
