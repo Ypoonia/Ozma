@@ -4,6 +4,7 @@ from doc_analyse.classifiers.base import (
     ClassificationResult,
     ClassifierDependencyError,
     ClassifierMessage,
+    ClassifierPromptError,
     ClassifierResponseError,
     PromptInjectionFinding,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "ClassificationResult",
     "ClassifierDependencyError",
     "ClassifierMessage",
+    "ClassifierPromptError",
     "ClassifierResponseError",
     "GeminiClassifier",
     "GroqClassifier",

@@ -9,6 +9,7 @@ from doc_analyse.classifiers import (
     BaseClassifier,
     ClassifierDependencyError,
     ClassifierMessage,
+    ClassifierPromptError,
     ClassifierResponseError,
     GeminiClassifier,
     GroqClassifier,
@@ -26,8 +27,8 @@ class FakeClassifier(BaseClassifier):
     provider_name = "fake"
     default_model = "fake-model"
 
-    def __init__(self, raw_response):
-        super().__init__()
+    def __init__(self, raw_response, **kwargs):
+        super().__init__(**kwargs)
         self.raw_response = raw_response
         self.messages = None
 
@@ -78,6 +79,36 @@ class ClassifierTests(unittest.TestCase):
         result = verifier.verify_text("normal policy document")
 
         self.assertEqual(result.verdict, "safe")
+
+    def test_classifier_loads_prompt_templates_from_markdown(self):
+        classifier = FakeClassifier(
+            '{"verdict": "safe", "confidence": 0.8, "reasons": [], "findings": []}'
+        )
+
+        messages = classifier.build_messages("sample text", metadata={"source_id": "s1"})
+
+        self.assertEqual(messages[0].role, "system")
+        self.assertEqual(messages[1].role, "user")
+        self.assertNotIn("{{ text }}", messages[1].content)
+        self.assertNotIn("{{ metadata }}", messages[1].content)
+        self.assertIn("sample text", messages[1].content)
+        self.assertIn("source_id", messages[1].content)
+
+    def test_empty_prompt_text_is_rejected(self):
+        with self.assertRaises(ClassifierPromptError):
+            FakeClassifier("{}", system_prompt="")
+
+    def test_user_prompt_template_must_include_required_placeholders(self):
+        with self.assertRaises(ClassifierPromptError) as error:
+            FakeClassifier("{}", user_prompt_template="Classify this input.")
+
+        self.assertIn("missing required placeholder", str(error.exception))
+
+    def test_classifier_input_text_must_not_be_empty(self):
+        classifier = FakeClassifier("{}")
+
+        with self.assertRaises(ClassifierPromptError):
+            classifier.classify("")
 
     def test_factory_builds_provider_classifier(self):
         classifier = build_classifier(
