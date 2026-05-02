@@ -41,6 +41,7 @@ verifier = DocumentVerifier(classifier=classifier_from_env())
 Supported provider values:
 
 - `openai`
+- `codex`
 - `anthropic` or `claude`
 - `gemini` or `google`
 - `groq`

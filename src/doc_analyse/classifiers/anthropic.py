@@ -8,6 +8,7 @@ from doc_analyse.classifiers.base import (
     BaseClassifier,
     ClassifierDependencyError,
     ClassifierMessage,
+    ensure_api_key,
 )
 
 
@@ -57,6 +58,9 @@ class AnthropicClassifier(BaseClassifier):
         if self._client is not None:
             return self._client
 
+        options = dict(self.client_options)
+        ensure_api_key("Anthropic", ("ANTHROPIC_API_KEY",), self.api_key, options)
+
         try:
             from anthropic import Anthropic
         except ImportError as exc:
@@ -64,10 +68,6 @@ class AnthropicClassifier(BaseClassifier):
                 "AnthropicClassifier requires the 'anthropic' package. "
                 "Install with: pip install anthropic"
             ) from exc
-
-        options = dict(self.client_options)
-        if self.api_key:
-            options["api_key"] = self.api_key
 
         self._client = Anthropic(**options)
         return self._client

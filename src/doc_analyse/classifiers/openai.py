@@ -8,6 +8,7 @@ from doc_analyse.classifiers.base import (
     BaseClassifier,
     ClassifierDependencyError,
     ClassifierMessage,
+    ensure_api_key,
 )
 
 
@@ -64,16 +65,15 @@ class OpenAIClassifier(BaseClassifier):
         if self._client is not None:
             return self._client
 
+        options = dict(self.client_options)
+        ensure_api_key("OpenAI", ("OPENAI_API_KEY",), self.api_key, options)
+
         try:
             from openai import OpenAI
         except ImportError as exc:
             raise ClassifierDependencyError(
                 "OpenAIClassifier requires the 'openai' package. Install with: pip install openai"
             ) from exc
-
-        options = dict(self.client_options)
-        if self.api_key:
-            options["api_key"] = self.api_key
 
         self._client = OpenAI(**options)
         return self._client
