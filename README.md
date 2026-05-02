@@ -45,6 +45,33 @@ Supported provider values:
 - `gemini` or `google`
 - `groq`
 
+## Project Layout
+
+Library code lives under `src/doc_analyse`. Tests live under `tests`.
+
+```text
+doc-analyse/
+  src/doc_analyse/
+  tests/
+  pyproject.toml
+```
+
+## Development
+
+Install the package locally with development dependencies:
+
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install -e ".[dev,llm]" --no-build-isolation
+```
+
+Use the shared commands before opening a PR:
+
+```bash
+make format
+make check
+```
+
 ## Result Shape
 
 `classifier.classify(...)` and `verifier.verify_text(...)` return a normalized `ClassificationResult`:

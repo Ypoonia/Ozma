@@ -9,7 +9,6 @@ from doc_analyse.classifiers.gemini import GeminiClassifier
 from doc_analyse.classifiers.groq import GroqClassifier
 from doc_analyse.classifiers.openai import OpenAIClassifier
 
-
 PROVIDERS: Dict[str, Type[BaseClassifier]] = {
     "anthropic": AnthropicClassifier,
     "claude": AnthropicClassifier,
@@ -34,7 +33,9 @@ def build_classifier(provider: str, **kwargs: Any) -> BaseClassifier:
     classifier_type = PROVIDERS.get(key)
     if classifier_type is None:
         available = ", ".join(sorted(PROVIDERS))
-        raise ValueError(f"Unknown classifier provider '{provider}'. Available providers: {available}")
+        raise ValueError(
+            f"Unknown classifier provider '{provider}'. Available providers: {available}"
+        )
 
     return classifier_type(**kwargs)
 
