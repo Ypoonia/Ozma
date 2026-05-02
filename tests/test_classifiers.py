@@ -4,8 +4,12 @@ from unittest.mock import patch
 
 from doc_analyse import DocumentVerifier
 from doc_analyse.classifiers import (
+    AnthropicClassifier,
     BaseClassifier,
+    ClassifierDependencyError,
     ClassifierMessage,
+    GeminiClassifier,
+    GroqClassifier,
     OpenAIClassifier,
     build_classifier,
     classifier_from_env,
@@ -83,6 +87,12 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(classifier.temperature, 0.1)
         self.assertEqual(classifier.max_tokens, 99)
 
+    def test_factory_treats_codex_as_openai_provider(self):
+        classifier = build_classifier("codex", model="test-model", client=object())
+
+        self.assertIsInstance(classifier, OpenAIClassifier)
+        self.assertEqual(classifier.provider, "openai")
+
     def test_env_factory_uses_provider_and_model(self):
         env = {
             "DOC_ANALYSE_LLM_PROVIDER": "openai",
@@ -99,6 +109,37 @@ class ClassifierTests(unittest.TestCase):
     def test_factory_rejects_unknown_provider(self):
         with self.assertRaises(ValueError):
             build_classifier("unknown-provider")
+
+    def test_provider_clients_raise_clear_missing_api_key_errors(self):
+        cases = (
+            (AnthropicClassifier, "ANTHROPIC_API_KEY"),
+            (OpenAIClassifier, "OPENAI_API_KEY"),
+            (GeminiClassifier, "GEMINI_API_KEY"),
+            (GroqClassifier, "GROQ_API_KEY"),
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            for classifier_type, env_name in cases:
+                with self.subTest(classifier_type=classifier_type.__name__):
+                    classifier = classifier_type()
+                    with self.assertRaises(ClassifierDependencyError) as error:
+                        classifier._get_client()
+
+                    self.assertIn(env_name, str(error.exception))
+                    self.assertIn("pass api_key=...", str(error.exception))
+
+    def test_injected_clients_do_not_require_api_keys(self):
+        for classifier_type in (
+            AnthropicClassifier,
+            OpenAIClassifier,
+            GeminiClassifier,
+            GroqClassifier,
+        ):
+            with self.subTest(classifier_type=classifier_type.__name__):
+                client = object()
+                classifier = classifier_type(client=client)
+
+                self.assertIs(classifier._get_client(), client)
 
 
 if __name__ == "__main__":

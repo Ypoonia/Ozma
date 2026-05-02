@@ -8,6 +8,7 @@ from doc_analyse.classifiers.base import (
     BaseClassifier,
     ClassifierDependencyError,
     ClassifierMessage,
+    ensure_api_key,
     render_messages_for_single_prompt,
 )
 
@@ -54,6 +55,9 @@ class GeminiClassifier(BaseClassifier):
         if self._client is not None:
             return self._client
 
+        options = dict(self.client_options)
+        ensure_api_key("Gemini", ("GEMINI_API_KEY", "GOOGLE_API_KEY"), self.api_key, options)
+
         try:
             from google import genai
         except ImportError as exc:
@@ -61,10 +65,6 @@ class GeminiClassifier(BaseClassifier):
                 "GeminiClassifier requires the 'google-genai' package. "
                 "Install with: pip install google-genai"
             ) from exc
-
-        options = dict(self.client_options)
-        if self.api_key:
-            options["api_key"] = self.api_key
 
         self._client = genai.Client(**options)
         return self._client
