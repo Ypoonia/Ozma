@@ -9,6 +9,8 @@ from doc_analyse.classifiers.base import BaseClassifier, ClassificationResult
 
 @dataclass
 class DocumentVerifier:
+    """Coordinates verification without knowing which LLM provider is used."""
+
     classifier: BaseClassifier
 
     def verify_text(

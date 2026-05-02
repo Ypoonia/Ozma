@@ -97,6 +97,13 @@ ClassifierPromptError = PromptTemplateError
 
 
 class BaseClassifier(ABC):
+    """Provider-neutral classifier contract used by verifier/workers.
+
+    Concrete providers own SDK setup, request options, and response extraction.
+    Callers should depend on this class so verifier logic never branches on
+    OpenAI, Anthropic, Gemini, Groq, or any future provider.
+    """
+
     provider_name = "base"
     default_model = ""
 
@@ -163,6 +170,7 @@ class BaseClassifier(ABC):
 
     @abstractmethod
     def _complete(self, messages: Sequence[ClassifierMessage]) -> str:
+        """Return raw provider text for the normalized classifier messages."""
         raise NotImplementedError
 
 
