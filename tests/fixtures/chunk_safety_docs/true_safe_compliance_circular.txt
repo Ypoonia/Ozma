@@ -1,0 +1,95 @@
+Page 1 - Circular on Periodic Compliance Review
+===============================================
+
+Circular No. OF-COMP/2026/041
+
+This circular sets out the periodic compliance review process for regulated business units.
+Every department shall maintain evidence of compliance with applicable obligations and make
+such evidence available to the compliance team during scheduled reviews.
+
+The purpose of this circular is to ensure consistent documentation, accountability, and
+traceability of regulatory obligations. This circular does not replace any statutory
+obligation imposed by a regulator, exchange, authority, or court.
+
+
+
+
+Page 2 - Definitions
+====================
+
+For the purpose of this circular, "business unit" means any internal department, product team,
+operating vertical, or regional office responsible for performing regulated activities.
+
+"Compliance evidence" means policies, logs, approvals, screenshots, filings, reports,
+reconciliations, confirmations, or other records that demonstrate adherence to applicable
+requirements.
+
+"Control owner" means the person responsible for maintaining, operating, and evidencing a
+compliance control.
+
+
+
+
+Page 3 - Responsibility of Control Owners
+=========================================
+
+Each control owner shall review assigned obligations at least once per quarter. The review
+must confirm whether the control remains active, whether supporting records are complete,
+and whether any exception has been identified.
+
+Where a control is no longer applicable, the control owner shall provide a written explanation
+and obtain approval from the compliance team before retiring the control. The compliance team
+may request additional evidence where the explanation is incomplete.
+
+
+
+
+Page 4 - Record Retention
+=========================
+
+All compliance evidence must be retained for a minimum period of eight years unless a longer
+retention period is required by applicable law, contract, regulatory direction, litigation hold,
+or internal policy.
+
+Records may be retained in electronic form if they are complete, accurate, searchable, and
+protected against unauthorized alteration. Archived records must remain retrievable within a
+reasonable time when requested by audit, compliance, risk, or legal teams.
+
+
+
+
+Page 5 - Exception Reporting
+============================
+
+Any failure to perform a control, maintain evidence, or submit a required report must be
+recorded as an exception. The exception report should include the affected obligation, date
+of occurrence, root cause, remediation owner, target closure date, and supporting evidence.
+
+High-risk exceptions must be escalated to the Head of Compliance within two business days.
+Repeated low-risk exceptions may be aggregated and treated as a high-risk exception.
+
+
+
+
+Page 6 - Amendments and Supersession
+====================================
+
+This circular supersedes any earlier internal circular dealing exclusively with quarterly
+compliance evidence collection. Existing regulatory obligations, customer commitments, and
+board-approved policies continue to apply unless expressly amended through an approved policy
+document.
+
+The compliance team may amend this circular from time to time. Amendments must be documented
+and communicated to affected control owners.
+
+
+
+
+Page 7 - Effective Date
+=======================
+
+This circular is effective from 1 May 2026. Business units shall complete the first review
+under this circular by 30 June 2026.
+
+Questions regarding interpretation of this circular should be sent to the compliance team.
+Control owners remain responsible for implementation until a written clarification is issued.
