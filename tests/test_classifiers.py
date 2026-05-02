@@ -18,6 +18,7 @@ from doc_analyse.classifiers import (
     classifier_from_env,
 )
 from doc_analyse.classifiers.anthropic import _anthropic_response_text
+from doc_analyse.classifiers.config import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 from doc_analyse.classifiers.gemini import _gemini_response_text
 from doc_analyse.classifiers.groq import _groq_response_text
 from doc_analyse.classifiers.openai import _openai_chat_response_text, _openai_response_text
@@ -109,6 +110,28 @@ class ClassifierTests(unittest.TestCase):
 
         with self.assertRaises(ClassifierPromptError):
             classifier.classify("")
+
+    def test_generation_options_default_when_omitted_or_none(self):
+        omitted = FakeClassifier("{}")
+        explicit_none = FakeClassifier("{}", temperature=None, max_tokens=None)
+
+        for classifier in (omitted, explicit_none):
+            with self.subTest(classifier=classifier):
+                self.assertEqual(classifier.temperature, DEFAULT_TEMPERATURE)
+                self.assertEqual(classifier.max_tokens, DEFAULT_MAX_TOKENS)
+
+    def test_generation_options_reject_invalid_values(self):
+        invalid_cases = (
+            {"temperature": "0"},
+            {"temperature": True},
+            {"max_tokens": "1200"},
+            {"max_tokens": 0},
+            {"max_tokens": False},
+        )
+
+        for kwargs in invalid_cases:
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                FakeClassifier("{}", **kwargs)
 
     def test_factory_builds_provider_classifier(self):
         classifier = build_classifier(

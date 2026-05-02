@@ -22,6 +22,9 @@ print(result.verdict)
 print(result.findings)
 ```
 
+Generation options are optional. If omitted or passed as `None`, the classifier uses library
+defaults for values like `temperature` and `max_tokens`.
+
 ## Environment Config
 
 Workers can build a classifier from environment variables:
