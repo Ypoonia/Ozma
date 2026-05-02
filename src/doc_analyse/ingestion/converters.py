@@ -161,14 +161,6 @@ def convert_document(
     return (registry or default_registry()).convert(path)
 
 
-def extract_document(
-    path: Union[str, Path],
-    registry: Optional[ConverterRegistry] = None,
-) -> ExtractedDocument:
-    """Backward-compatible alias for older extraction-oriented call sites."""
-    return convert_document(path, registry=registry)
-
-
 def _resolve_existing_file(path: Union[str, Path]) -> Path:
     resolved_path = Path(path).expanduser()
     if not resolved_path.exists():

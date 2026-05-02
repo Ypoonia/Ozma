@@ -9,7 +9,6 @@ from doc_analyse.ingestion.converters import (
     UnsupportedDocumentError,
     convert_document,
     default_registry,
-    extract_document,
 )
 from doc_analyse.ingestion.models import (
     DocumentSegment,
@@ -35,6 +34,5 @@ __all__ = [
     "chunk_document",
     "convert_document",
     "default_registry",
-    "extract_document",
     "ingest_document",
 ]
