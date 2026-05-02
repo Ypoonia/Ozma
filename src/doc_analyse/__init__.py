@@ -13,6 +13,14 @@ from doc_analyse.classifiers import (
     build_classifier,
     classifier_from_env,
 )
+from doc_analyse.detection import (
+    BaseDetector,
+    DetectionFinding,
+    RegexDetector,
+    RegexRule,
+    RegexRuleDefinition,
+    compile_regex_rules,
+)
 from doc_analyse.ingestion import (
     BaseDocumentConverter,
     ConverterDependencyError,
@@ -37,6 +45,7 @@ __all__ = [
     "AnthropicClassifier",
     "BaseDocumentConverter",
     "BaseClassifier",
+    "BaseDetector",
     "ClassificationResult",
     "ClassifierDependencyError",
     "ClassifierMessage",
@@ -47,6 +56,7 @@ __all__ = [
     "DocumentConversionError",
     "DocumentSegment",
     "DocumentVerifier",
+    "DetectionFinding",
     "ExtractedDocument",
     "GeminiClassifier",
     "GroqClassifier",
@@ -54,6 +64,9 @@ __all__ = [
     "MarkItDownDocumentConverter",
     "OpenAIClassifier",
     "PromptInjectionFinding",
+    "RegexDetector",
+    "RegexRule",
+    "RegexRuleDefinition",
     "TextChunk",
     "TextChunker",
     "TextDocumentConverter",
@@ -61,6 +74,7 @@ __all__ = [
     "build_classifier",
     "chunk_document",
     "classifier_from_env",
+    "compile_regex_rules",
     "convert_document",
     "extract_document",
     "ingest_document",
