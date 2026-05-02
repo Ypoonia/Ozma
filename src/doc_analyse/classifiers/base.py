@@ -217,6 +217,15 @@ def ensure_api_key(
     )
 
 
+def require_text_response(provider_name: str, text: Any) -> str:
+    # Empty provider text leaves nothing meaningful for the JSON parser to validate.
+    # Fail at the provider boundary so callers see the real integration problem.
+    if not isinstance(text, str) or not text.strip():
+        raise ClassifierResponseError(f"{provider_name} returned no text content.")
+
+    return text.strip()
+
+
 def _format_metadata(metadata: Mapping[str, Any]) -> str:
     if not metadata:
         return "none"

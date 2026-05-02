@@ -9,6 +9,7 @@ from doc_analyse.classifiers.base import (
     ClassifierDependencyError,
     ClassifierMessage,
     ensure_api_key,
+    require_text_response,
 )
 
 
@@ -49,7 +50,7 @@ class GroqClassifier(BaseClassifier):
             response_format={"type": "json_object"},
             **self.request_options,
         )
-        return response.choices[0].message.content or ""
+        return _groq_response_text(response)
 
     def _get_client(self) -> Any:
         if self._client is not None:
@@ -67,3 +68,13 @@ class GroqClassifier(BaseClassifier):
 
         self._client = Groq(**options)
         return self._client
+
+
+def _groq_response_text(response: Any) -> str:
+    # Groq follows the OpenAI-compatible chat completions response shape.
+    try:
+        text = response.choices[0].message.content
+    except (AttributeError, IndexError, TypeError):
+        text = None
+
+    return require_text_response("Groq", text)

@@ -9,6 +9,7 @@ from doc_analyse.classifiers.base import (
     ClassifierDependencyError,
     ClassifierMessage,
     ensure_api_key,
+    require_text_response,
 )
 
 
@@ -91,10 +92,11 @@ def _split_anthropic_messages(
 
 
 def _anthropic_response_text(response: Any) -> str:
-    chunks = []
+    # Anthropic returns content as blocks; only text blocks are usable classifier output.
+    text_parts = []
     for block in getattr(response, "content", []) or []:
         text = getattr(block, "text", None)
-        if text:
-            chunks.append(text)
+        if isinstance(text, str) and text.strip():
+            text_parts.append(text)
 
-    return "".join(chunks)
+    return require_text_response("Anthropic", "".join(text_parts))

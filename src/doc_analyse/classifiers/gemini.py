@@ -10,6 +10,7 @@ from doc_analyse.classifiers.base import (
     ClassifierMessage,
     ensure_api_key,
     render_messages_for_single_prompt,
+    require_text_response,
 )
 
 
@@ -49,7 +50,7 @@ class GeminiClassifier(BaseClassifier):
             config=config,
             **self.request_options,
         )
-        return getattr(response, "text", "") or ""
+        return _gemini_response_text(response)
 
     def _get_client(self) -> Any:
         if self._client is not None:
@@ -83,3 +84,8 @@ class GeminiClassifier(BaseClassifier):
             max_output_tokens=self.max_tokens,
             response_mime_type="application/json",
         )
+
+
+def _gemini_response_text(response: Any) -> str:
+    # Gemini exposes the generated text as a top-level convenience property.
+    return require_text_response("Gemini", getattr(response, "text", None))
