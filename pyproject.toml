@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "doc-analyse"
+version = "0.1.0"
+description = "Detect prompt-injection-like spans in documents before exposing them to LLMs."
+requires-python = ">=3.9"
+dependencies = [
+    "beautifulsoup4",
+    "lxml",
+    "openpyxl",
+    "pandas",
+    "pdfplumber",
+    "pillow",
+    "pymupdf",
+    "pypdf",
+    "pytesseract",
+    "python-docx",
+    "python-dotenv",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+llm = [
+    "anthropic",
+    "google-genai",
+    "groq",
+    "openai",
+]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

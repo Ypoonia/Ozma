@@ -1,0 +1,16 @@
+pypdf
+pymupdf
+pdfplumber
+python-docx
+pytesseract
+pillow
+pandas
+openpyxl
+beautifulsoup4
+lxml
+python-dotenv
+tqdm
+openai
+anthropic
+google-genai
+groq
