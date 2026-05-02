@@ -46,6 +46,26 @@ Supported provider values:
 - `gemini` or `google`
 - `groq`
 
+## Ingestion
+
+The ingestion layer is offline and does not call any LLM provider.
+
+```python
+from doc_analyse import ingest_document
+
+result = ingest_document("policy.txt")
+
+document = result.document
+chunks = result.chunks
+```
+
+Rich formats are converted into the library's normalized document type before chunking.
+Install conversion dependencies when you want formats beyond plain text and Markdown:
+
+```bash
+python -m pip install -e ".[conversion]"
+```
+
 ## Project Layout
 
 Library code lives under `src/doc_analyse`. Tests live under `tests`.
