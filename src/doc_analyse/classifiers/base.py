@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Optional, Tuple
 
+from doc_analyse.classifiers.config import resolve_generation_config
 from doc_analyse.prompt.loader import (
     PromptTemplateError,
     load_default_classification_prompt,
@@ -102,8 +103,8 @@ class BaseClassifier(ABC):
     def __init__(
         self,
         model: Optional[str] = None,
-        temperature: float = 0.0,
-        max_tokens: int = 1200,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None,
         user_prompt_template: Optional[str] = None,
     ) -> None:
@@ -111,8 +112,12 @@ class BaseClassifier(ABC):
         if not self.model:
             raise ValueError("A model is required for this classifier.")
 
-        self.temperature = temperature
-        self.max_tokens = max_tokens
+        generation_config = resolve_generation_config(
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        self.temperature = generation_config.temperature
+        self.max_tokens = generation_config.max_tokens
         self.system_prompt = load_default_system_prompt(system_prompt)
         self.user_prompt_template = load_default_classification_prompt(user_prompt_template)
 
