@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any, Dict, Optional, Tuple
 
 from doc_analyse.classifiers.base import (
+    DEFAULT_SYSTEM_PROMPT,
     BaseClassifier,
     ClassifierDependencyError,
     ClassifierMessage,
-    DEFAULT_SYSTEM_PROMPT,
 )
 
 
@@ -60,7 +61,8 @@ class AnthropicClassifier(BaseClassifier):
             from anthropic import Anthropic
         except ImportError as exc:
             raise ClassifierDependencyError(
-                "AnthropicClassifier requires the 'anthropic' package. Install with: pip install anthropic"
+                "AnthropicClassifier requires the 'anthropic' package. "
+                "Install with: pip install anthropic"
             ) from exc
 
         options = dict(self.client_options)

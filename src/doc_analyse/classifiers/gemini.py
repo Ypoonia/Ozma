@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any, Dict, Optional
 
 from doc_analyse.classifiers.base import (
+    DEFAULT_SYSTEM_PROMPT,
     BaseClassifier,
     ClassifierDependencyError,
     ClassifierMessage,
-    DEFAULT_SYSTEM_PROMPT,
     render_messages_for_single_prompt,
 )
 
@@ -57,7 +58,8 @@ class GeminiClassifier(BaseClassifier):
             from google import genai
         except ImportError as exc:
             raise ClassifierDependencyError(
-                "GeminiClassifier requires the 'google-genai' package. Install with: pip install google-genai"
+                "GeminiClassifier requires the 'google-genai' package. "
+                "Install with: pip install google-genai"
             ) from exc
 
         options = dict(self.client_options)
@@ -72,7 +74,8 @@ class GeminiClassifier(BaseClassifier):
             from google.genai import types
         except ImportError as exc:
             raise ClassifierDependencyError(
-                "GeminiClassifier requires the 'google-genai' package. Install with: pip install google-genai"
+                "GeminiClassifier requires the 'google-genai' package. "
+                "Install with: pip install google-genai"
             ) from exc
 
         return types.GenerateContentConfig(

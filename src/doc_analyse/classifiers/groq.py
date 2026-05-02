@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any, Dict, Optional
 
 from doc_analyse.classifiers.base import (
+    DEFAULT_SYSTEM_PROMPT,
     BaseClassifier,
     ClassifierDependencyError,
     ClassifierMessage,
-    DEFAULT_SYSTEM_PROMPT,
 )
 
 
