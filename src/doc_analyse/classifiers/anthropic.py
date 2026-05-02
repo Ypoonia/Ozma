@@ -8,6 +8,8 @@ from doc_analyse.classifiers.base import (
     BaseClassifier,
     ClassifierDependencyError,
     ClassifierMessage,
+    ensure_api_key,
+    require_text_response,
 )
 
 
@@ -57,6 +59,9 @@ class AnthropicClassifier(BaseClassifier):
         if self._client is not None:
             return self._client
 
+        options = dict(self.client_options)
+        ensure_api_key("Anthropic", ("ANTHROPIC_API_KEY",), self.api_key, options)
+
         try:
             from anthropic import Anthropic
         except ImportError as exc:
@@ -64,10 +69,6 @@ class AnthropicClassifier(BaseClassifier):
                 "AnthropicClassifier requires the 'anthropic' package. "
                 "Install with: pip install anthropic"
             ) from exc
-
-        options = dict(self.client_options)
-        if self.api_key:
-            options["api_key"] = self.api_key
 
         self._client = Anthropic(**options)
         return self._client
@@ -91,10 +92,11 @@ def _split_anthropic_messages(
 
 
 def _anthropic_response_text(response: Any) -> str:
-    chunks = []
+    # Anthropic returns content as blocks; only text blocks are usable classifier output.
+    text_parts = []
     for block in getattr(response, "content", []) or []:
         text = getattr(block, "text", None)
-        if text:
-            chunks.append(text)
+        if isinstance(text, str) and text.strip():
+            text_parts.append(text)
 
-    return "".join(chunks)
+    return require_text_response("Anthropic", "".join(text_parts))

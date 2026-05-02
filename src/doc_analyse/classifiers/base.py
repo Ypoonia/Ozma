@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
@@ -192,6 +193,37 @@ Document text:
 
 def render_messages_for_single_prompt(messages: Sequence[ClassifierMessage]) -> str:
     return "\n\n".join(f"{message.role.upper()}:\n{message.content}" for message in messages)
+
+
+def ensure_api_key(
+    provider_name: str,
+    env_names: Sequence[str],
+    api_key: Optional[str],
+    options: dict[str, Any],
+) -> None:
+    if api_key:
+        options["api_key"] = api_key
+        return
+
+    if options.get("api_key"):
+        return
+
+    if any(os.getenv(env_name) for env_name in env_names):
+        return
+
+    env_hint = " or ".join(env_names)
+    raise ClassifierDependencyError(
+        f"Missing {provider_name} API key. Set {env_hint} or pass api_key=..."
+    )
+
+
+def require_text_response(provider_name: str, text: Any) -> str:
+    # Empty provider text leaves nothing meaningful for the JSON parser to validate.
+    # Fail at the provider boundary so callers see the real integration problem.
+    if not isinstance(text, str) or not text.strip():
+        raise ClassifierResponseError(f"{provider_name} returned no text content.")
+
+    return text.strip()
 
 
 def _format_metadata(metadata: Mapping[str, Any]) -> str:

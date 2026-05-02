@@ -8,6 +8,8 @@ from doc_analyse.classifiers.base import (
     BaseClassifier,
     ClassifierDependencyError,
     ClassifierMessage,
+    ensure_api_key,
+    require_text_response,
 )
 
 
@@ -58,11 +60,14 @@ class OpenAIClassifier(BaseClassifier):
             max_tokens=self.max_tokens,
             **self.request_options,
         )
-        return response.choices[0].message.content or ""
+        return _openai_chat_response_text(response)
 
     def _get_client(self) -> Any:
         if self._client is not None:
             return self._client
+
+        options = dict(self.client_options)
+        ensure_api_key("OpenAI", ("OPENAI_API_KEY",), self.api_key, options)
 
         try:
             from openai import OpenAI
@@ -71,24 +76,30 @@ class OpenAIClassifier(BaseClassifier):
                 "OpenAIClassifier requires the 'openai' package. Install with: pip install openai"
             ) from exc
 
-        options = dict(self.client_options)
-        if self.api_key:
-            options["api_key"] = self.api_key
-
         self._client = OpenAI(**options)
         return self._client
 
 
 def _openai_response_text(response: Any) -> str:
     output_text = getattr(response, "output_text", None)
-    if output_text:
-        return output_text
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
 
-    chunks = []
+    # The Responses API nests text in output items; normalize all text parts together.
+    text_parts = []
     for item in getattr(response, "output", []) or []:
         for content in getattr(item, "content", []) or []:
             text = getattr(content, "text", None)
-            if text:
-                chunks.append(text)
+            if isinstance(text, str) and text.strip():
+                text_parts.append(text)
 
-    return "".join(chunks)
+    return require_text_response("OpenAI", "".join(text_parts))
+
+
+def _openai_chat_response_text(response: Any) -> str:
+    try:
+        text = response.choices[0].message.content
+    except (AttributeError, IndexError, TypeError):
+        text = None
+
+    return require_text_response("OpenAI", text)

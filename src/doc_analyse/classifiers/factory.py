@@ -12,6 +12,7 @@ from doc_analyse.classifiers.openai import OpenAIClassifier
 PROVIDERS: Dict[str, Type[BaseClassifier]] = {
     "anthropic": AnthropicClassifier,
     "claude": AnthropicClassifier,
+    "codex": OpenAIClassifier,
     "gemini": GeminiClassifier,
     "google": GeminiClassifier,
     "groq": GroqClassifier,
@@ -21,6 +22,7 @@ PROVIDERS: Dict[str, Type[BaseClassifier]] = {
 PROVIDER_API_KEY_ENV = {
     "anthropic": "ANTHROPIC_API_KEY",
     "claude": "ANTHROPIC_API_KEY",
+    "codex": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "google": "GEMINI_API_KEY",
     "groq": "GROQ_API_KEY",

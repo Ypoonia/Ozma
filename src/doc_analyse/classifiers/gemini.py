@@ -8,7 +8,9 @@ from doc_analyse.classifiers.base import (
     BaseClassifier,
     ClassifierDependencyError,
     ClassifierMessage,
+    ensure_api_key,
     render_messages_for_single_prompt,
+    require_text_response,
 )
 
 
@@ -48,11 +50,14 @@ class GeminiClassifier(BaseClassifier):
             config=config,
             **self.request_options,
         )
-        return getattr(response, "text", "") or ""
+        return _gemini_response_text(response)
 
     def _get_client(self) -> Any:
         if self._client is not None:
             return self._client
+
+        options = dict(self.client_options)
+        ensure_api_key("Gemini", ("GEMINI_API_KEY", "GOOGLE_API_KEY"), self.api_key, options)
 
         try:
             from google import genai
@@ -61,10 +66,6 @@ class GeminiClassifier(BaseClassifier):
                 "GeminiClassifier requires the 'google-genai' package. "
                 "Install with: pip install google-genai"
             ) from exc
-
-        options = dict(self.client_options)
-        if self.api_key:
-            options["api_key"] = self.api_key
 
         self._client = genai.Client(**options)
         return self._client
@@ -83,3 +84,8 @@ class GeminiClassifier(BaseClassifier):
             max_output_tokens=self.max_tokens,
             response_mime_type="application/json",
         )
+
+
+def _gemini_response_text(response: Any) -> str:
+    # Gemini exposes the generated text as a top-level convenience property.
+    return require_text_response("Gemini", getattr(response, "text", None))
