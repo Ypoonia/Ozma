@@ -4,7 +4,6 @@ from collections.abc import Sequence
 from typing import Any, Dict, Optional
 
 from doc_analyse.classifiers.base import (
-    DEFAULT_SYSTEM_PROMPT,
     BaseClassifier,
     ClassifierDependencyError,
     ClassifierMessage,
@@ -24,7 +23,8 @@ class OpenAIClassifier(BaseClassifier):
         client: Optional[Any] = None,
         temperature: float = 0.0,
         max_tokens: int = 1200,
-        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        system_prompt: Optional[str] = None,
+        user_prompt_template: Optional[str] = None,
         request_options: Optional[Dict[str, Any]] = None,
         **client_options: Any,
     ) -> None:
@@ -33,6 +33,7 @@ class OpenAIClassifier(BaseClassifier):
             temperature=temperature,
             max_tokens=max_tokens,
             system_prompt=system_prompt,
+            user_prompt_template=user_prompt_template,
         )
         self.api_key = api_key
         self._client = client

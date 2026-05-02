@@ -53,9 +53,13 @@ Library code lives under `src/doc_analyse`. Tests live under `tests`.
 ```text
 doc-analyse/
   src/doc_analyse/
+    prompt/
   tests/
   pyproject.toml
 ```
+
+Prompt templates live in `src/doc_analyse/prompt/*.md` so classifier behavior can be
+reviewed and changed without editing provider transport code.
 
 ## Development
 
