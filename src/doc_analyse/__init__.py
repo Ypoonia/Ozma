@@ -14,12 +14,12 @@ from doc_analyse.classifiers import (
     classifier_from_env,
 )
 from doc_analyse.detection import (
+    DEFAULT_YARA_RULES_FILE,
     BaseDetector,
     DetectionFinding,
     ParallelDetector,
     PromptGuardDependencyError,
     PromptGuardDetector,
-    DEFAULT_YARA_RULES_FILE,
     YaraDetector,
     YaraGlossaryError,
 )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from importlib.resources import files
 from pathlib import Path
-from typing import Any, Iterable, Optional, Union
+from typing import Any, Optional, Union
 
 try:
     import yara
@@ -24,7 +24,8 @@ class YaraGlossaryError(ValueError):
 def _read_yara_source(path: Optional[Union[str, Path]]) -> str:
     try:
         if path is None:
-            return files(_YARA_PACKAGE).joinpath(DEFAULT_YARA_RULES_FILE).read_text(encoding="utf-8")
+            pkg_file = files(_YARA_PACKAGE).joinpath(DEFAULT_YARA_RULES_FILE)
+            return pkg_file.read_text(encoding="utf-8")
         return Path(str(path)).read_text(encoding="utf-8")
     except OSError as exc:
         source = DEFAULT_YARA_RULES_FILE if path is None else str(path)
@@ -52,6 +53,10 @@ class YaraDetector(BaseDetector):
     @classmethod
     def from_file(cls, path: Union[str, Path]) -> YaraDetector:
         """Build a detector from a standalone .yar file."""
+        if yara is None:
+            raise YaraGlossaryError(
+                "yara-python is required. Install with: pip install 'doc-analyse[yara]'"
+            )
         try:
             source = Path(str(path)).read_text(encoding="utf-8")
         except OSError as exc:
@@ -65,16 +70,33 @@ class YaraDetector(BaseDetector):
     def detect(self, chunk: TextChunk) -> tuple[DetectionFinding, ...]:
         if not isinstance(chunk.text, str) or not chunk.text.strip():
             return ()
+        if self._compiled is None:
+            raise YaraGlossaryError(
+                "yara-python is required. Install with: pip install 'doc-analyse[yara]'"
+            )
 
         encoded = chunk.text.encode("utf-8")
         results = self._compiled.match(data=encoded)
+
+        # Precompute byte-offset -> char-offset mapping once per call (O(n) time/space)
+        # so every per-match lookup below is O(1) rather than re-decoding the prefix.
+        byte_to_char: list[int] = [0] * (len(encoded) + 1)
+        char_idx = 0
+        byte_idx = 0
+        while byte_idx < len(encoded):
+            b = encoded[byte_idx]
+            seq_len = 1 if b < 0x80 else 2 if b < 0xE0 else 3 if b < 0xF0 else 4
+            for i in range(seq_len):
+                byte_to_char[byte_idx + i] = char_idx
+            byte_idx += seq_len
+            char_idx += 1
+        byte_to_char[len(encoded)] = char_idx
 
         findings = []
         for rule in results:
             rule_meta = dict(rule.meta)
 
             for string_match in rule.strings:
-                string_id = string_match.identifier
                 for instance in string_match.instances:
                     matched_bytes = instance.matched_data
                     if isinstance(matched_bytes, bytes):
@@ -84,14 +106,9 @@ class YaraDetector(BaseDetector):
                     if not span_text.strip():
                         continue
 
-                    byte_offset = instance.offset
-                    byte_length = instance.matched_length
-
-                    # YARA reports byte offsets in UTF-8 encoded data.
-                    # Convert to character offsets for consistent span tracking.
-                    text_bytes = chunk.text.encode("utf-8")
-                    char_start = len(text_bytes[:byte_offset].decode("utf-8", errors="replace"))
-                    char_end = char_start + len(span_text)
+                    # Convert byte offset to character offset for correct Unicode indexing.
+                    char_offset = byte_to_char[instance.offset]
+                    span_char_len = len(span_text)
 
                     findings.append(
                         self._build_finding(
@@ -101,8 +118,8 @@ class YaraDetector(BaseDetector):
                             severity=str(rule_meta.get("severity", "medium")),
                             reason=str(rule_meta.get("reason", "YARA rule matched.")),
                             rule_id=str(rule_meta.get("rule_id", rule.rule)),
-                            start_char=chunk.start_char + char_start,
-                            end_char=chunk.start_char + char_end,
+                            start_char=chunk.start_char + char_offset,
+                            end_char=chunk.start_char + char_offset + span_char_len,
                             requires_llm_validation=True,
                         )
                     )
