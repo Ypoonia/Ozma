@@ -69,7 +69,6 @@ class RegexDetector(BaseDetector):
             return ()
 
         findings = []
-        seen = set()
         for rule in self.rules:
             for match in rule.pattern.finditer(chunk.text):
                 span = _matched_text(match)
@@ -78,26 +77,20 @@ class RegexDetector(BaseDetector):
 
                 start_char = chunk.start_char + match.start()
                 end_char = chunk.start_char + match.end()
-                key = (rule.rule_id, start_char, end_char, span)
-                if key in seen:
-                    continue
-
-                seen.add(key)
                 findings.append(
-                    DetectionFinding(
+                    self._build_finding(
+                        chunk=chunk,
                         span=span,
                         category=rule.category,
                         severity=rule.severity,
                         reason=rule.reason,
+                        rule_id=rule.rule_id,
                         start_char=start_char,
                         end_char=end_char,
-                        source=chunk.source,
-                        rule_id=rule.rule_id,
-                        metadata=dict(chunk.metadata),
                     )
                 )
 
-        return tuple(sorted(findings, key=lambda finding: (finding.start_char, finding.end_char)))
+        return self._finalize_findings(findings)
 
 
 @dataclass(frozen=True)

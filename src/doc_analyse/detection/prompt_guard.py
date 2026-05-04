@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from threading import Lock
 from typing import Any, Iterable, Mapping, Optional
 
 from doc_analyse.detection.base import BaseDetector
@@ -45,6 +46,7 @@ class PromptGuardDetector(BaseDetector):
         self.device = device
         self.eager_load = eager_load
         self.pipeline_options = pipeline_options
+        self._load_lock = Lock()
 
         if self._classifier is None and self.eager_load:
             self.load()
@@ -86,7 +88,10 @@ class PromptGuardDetector(BaseDetector):
         if self._classifier is not None:
             return self._classifier
 
-        self._classifier = self._build_classifier()
+        with self._load_lock:
+            if self._classifier is not None:
+                return self._classifier
+            self._classifier = self._build_classifier()
         return self._classifier
 
     def _build_classifier(self) -> Any:
@@ -117,21 +122,20 @@ class PromptGuardDetector(BaseDetector):
         reason: str,
         requires_llm_validation: bool,
     ) -> DetectionFinding:
-        return DetectionFinding(
+        return self._build_finding(
+            chunk=chunk,
             span=chunk.text,
             category=category,
             severity=severity,
             reason=reason,
+            rule_id="prompt_guard",
             start_char=chunk.start_char,
             end_char=chunk.end_char,
-            source=chunk.source,
-            rule_id="prompt_guard",
+            requires_llm_validation=requires_llm_validation,
             score=score,
             metadata={
-                **dict(chunk.metadata),
                 "detector": "PromptGuardDetector",
                 "model": self.model,
-                "requires_llm_validation": requires_llm_validation,
             },
         )
 

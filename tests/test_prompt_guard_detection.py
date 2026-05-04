@@ -1,6 +1,10 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 
 from doc_analyse import ParallelDetector, PromptGuardDetector, RegexDetector
+from doc_analyse.detection import BaseDetector
 from doc_analyse.detection.prompt_guard import PromptGuardDependencyError
 from doc_analyse.ingestion.models import TextChunk
 
@@ -25,7 +29,7 @@ class FakePipelineFactory:
         return self.classifier
 
 
-class FailingDetector:
+class FailingDetector(BaseDetector):
     def detect(self, chunk):
         raise RuntimeError("model unavailable")
 
@@ -49,6 +53,7 @@ def test_prompt_guard_detector_flags_malicious_chunks():
     assert findings[0].score == 0.93
     assert findings[0].start_char == 20
     assert findings[0].end_char == 53
+    assert findings[0].requires_llm_validation is True
     assert findings[0].metadata["requires_llm_validation"] is True
     assert classifier.calls == [chunk.text]
 
@@ -67,6 +72,7 @@ def test_prompt_guard_detector_flags_uncertain_chunks():
     assert len(findings) == 1
     assert findings[0].category == "prompt_guard_uncertain"
     assert findings[0].severity == "medium"
+    assert findings[0].requires_llm_validation is True
 
 
 def test_prompt_guard_detector_returns_empty_for_benign_chunks():
@@ -130,6 +136,29 @@ def test_prompt_guard_detector_can_opt_into_lazy_loading(monkeypatch):
         )
 
 
+def test_prompt_guard_detector_load_is_thread_safe(monkeypatch):
+    classifier = FakePromptGuardClassifier([{"label": "BENIGN", "score": 0.99}])
+    barrier = Barrier(5)
+    build_calls = []
+
+    def build_classifier(self):
+        build_calls.append(1)
+        return classifier
+
+    monkeypatch.setattr(PromptGuardDetector, "_build_classifier", build_classifier)
+    detector = PromptGuardDetector(eager_load=False)
+
+    def load_after_barrier():
+        barrier.wait()
+        return detector.load()
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        loaded = list(executor.map(lambda _: load_after_barrier(), range(5)))
+
+    assert len(build_calls) == 1
+    assert all(item is classifier for item in loaded)
+
+
 def test_parallel_detector_combines_regex_and_prompt_guard_findings():
     prompt_guard = PromptGuardDetector(
         classifier=FakePromptGuardClassifier([{"label": "MALICIOUS", "score": 0.91}])
@@ -162,5 +191,6 @@ def test_parallel_detector_turns_detector_failure_into_uncertain_finding():
 
     assert len(findings) == 1
     assert findings[0].category == "detector_error"
+    assert findings[0].requires_llm_validation is True
     assert findings[0].metadata["requires_llm_validation"] is True
     assert "model unavailable" in findings[0].metadata["error"]

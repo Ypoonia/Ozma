@@ -16,6 +16,7 @@ class DetectionFinding:
     end_char: int
     source: str
     rule_id: str
+    requires_llm_validation: bool = False
     score: Optional[float] = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 

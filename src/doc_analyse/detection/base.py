@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from doc_analyse.detection.models import DetectionFinding
 from doc_analyse.ingestion.models import TextChunk
@@ -17,22 +17,74 @@ class BaseDetector(ABC):
 
     def detect_many(self, chunks: Iterable[TextChunk]) -> tuple[DetectionFinding, ...]:
         findings = []
-        seen = set()
         for chunk in chunks:
-            for finding in self.detect(chunk):
-                key = (
-                    finding.rule_id,
-                    finding.start_char,
-                    finding.end_char,
-                    finding.span,
-                )
-                if key in seen:
-                    continue
+            findings.extend(self.detect(chunk))
 
-                seen.add(key)
-                findings.append(finding)
+        return self._finalize_findings(findings)
 
-        return tuple(findings)
+    def _finalize_findings(
+        self, findings: Iterable[DetectionFinding]
+    ) -> tuple[DetectionFinding, ...]:
+        deduped = []
+        seen = set()
+        for finding in findings:
+            key = self._finding_key(finding)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(finding)
+
+        return tuple(
+            sorted(
+                deduped,
+                key=lambda finding: (finding.start_char, finding.end_char, finding.rule_id),
+            )
+        )
+
+    @staticmethod
+    def _finding_key(finding: DetectionFinding) -> tuple[str, int, int, str]:
+        return (
+            finding.rule_id,
+            finding.start_char,
+            finding.end_char,
+            finding.span,
+        )
+
+    def _build_finding(
+        self,
+        *,
+        chunk: TextChunk,
+        span: str,
+        category: str,
+        severity: str,
+        reason: str,
+        rule_id: str,
+        start_char: int,
+        end_char: int,
+        score: Optional[float] = None,
+        requires_llm_validation: bool = False,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> DetectionFinding:
+        resolved_metadata = dict(chunk.metadata)
+        if metadata:
+            resolved_metadata.update(metadata)
+        if requires_llm_validation:
+            # Backward compatibility while callers migrate to the first-class field.
+            resolved_metadata["requires_llm_validation"] = True
+
+        return DetectionFinding(
+            span=span,
+            category=category,
+            severity=severity,
+            reason=reason,
+            start_char=start_char,
+            end_char=end_char,
+            source=chunk.source,
+            rule_id=rule_id,
+            requires_llm_validation=requires_llm_validation,
+            score=score,
+            metadata=resolved_metadata,
+        )
 
 
 class ParallelDetector(BaseDetector):
@@ -60,30 +112,7 @@ class ParallelDetector(BaseDetector):
                 except Exception as exc:
                     findings.append(_detector_error_finding(chunk, detector, exc))
 
-        return tuple(
-            sorted(
-                self._dedupe(findings),
-                key=lambda finding: (finding.start_char, finding.end_char, finding.rule_id),
-            )
-        )
-
-    def _dedupe(self, findings: Iterable[DetectionFinding]) -> tuple[DetectionFinding, ...]:
-        deduped = []
-        seen = set()
-        for finding in findings:
-            key = (
-                finding.rule_id,
-                finding.start_char,
-                finding.end_char,
-                finding.span,
-            )
-            if key in seen:
-                continue
-
-            seen.add(key)
-            deduped.append(finding)
-
-        return tuple(deduped)
+        return self._finalize_findings(findings)
 
 
 def _detector_error_finding(
@@ -92,19 +121,18 @@ def _detector_error_finding(
     exc: Exception,
 ) -> DetectionFinding:
     detector_name = detector.__class__.__name__
-    return DetectionFinding(
+    return detector._build_finding(
+        chunk=chunk,
         span=chunk.text,
         category="detector_error",
         severity="medium",
         reason=f"{detector_name} failed; send this chunk to LLM validation.",
+        rule_id=f"{detector_name.lower()}_error",
         start_char=chunk.start_char,
         end_char=chunk.end_char,
-        source=chunk.source,
-        rule_id=f"{detector_name.lower()}_error",
+        requires_llm_validation=True,
         metadata={
-            **dict(chunk.metadata),
             "detector": detector_name,
             "error": str(exc),
-            "requires_llm_validation": True,
         },
     )
