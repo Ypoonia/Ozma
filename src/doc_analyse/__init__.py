@@ -14,12 +14,16 @@ from doc_analyse.classifiers import (
     classifier_from_env,
 )
 from doc_analyse.detection import (
+    DEFAULT_REGEX_GLOSSARY,
     BaseDetector,
     DetectionFinding,
     RegexDetector,
+    RegexGlossaryError,
     RegexRule,
     RegexRuleDefinition,
     compile_regex_rules,
+    load_regex_rule_definitions,
+    parse_regex_glossary,
 )
 from doc_analyse.ingestion import (
     BaseDocumentConverter,
@@ -56,6 +60,7 @@ __all__ = [
     "DocumentConversionError",
     "DocumentSegment",
     "DocumentVerifier",
+    "DEFAULT_REGEX_GLOSSARY",
     "DetectionFinding",
     "ExtractedDocument",
     "GeminiClassifier",
@@ -65,6 +70,7 @@ __all__ = [
     "OpenAIClassifier",
     "PromptInjectionFinding",
     "RegexDetector",
+    "RegexGlossaryError",
     "RegexRule",
     "RegexRuleDefinition",
     "TextChunk",
@@ -78,4 +84,6 @@ __all__ = [
     "convert_document",
     "extract_document",
     "ingest_document",
+    "load_regex_rule_definitions",
+    "parse_regex_glossary",
 ]

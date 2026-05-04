@@ -1,0 +1,58 @@
+# Default local glossary for cheap regex detection.
+#
+# These rules are intentionally evidence-focused. They do not make a final
+# safety decision; they mark spans that should be validated by the next stage.
+rules:
+  - rule_id: instruction_override
+    pattern: \b(ignore|disregard|forget)\s+(all\s+)?(previous|prior|earlier)\s+instructions?\b
+    category: instruction_override
+    severity: high
+    reason: Attempts to override existing instructions.
+
+  - rule_id: system_override
+    pattern: \b(system|developer)\s+(override|instruction|prompt)s?\b
+    category: instruction_override
+    severity: high
+    reason: References higher-priority system or developer instructions.
+
+  - rule_id: hidden_prompt_exfiltration
+    pattern: \b(system prompt|developer prompt|hidden instructions?|private tool schemas?)\b
+    category: secret_exfiltration
+    severity: critical
+    reason: Requests hidden prompts, hidden instructions, or private tool schema details.
+
+  - rule_id: credential_exfiltration
+    pattern: \b(api keys?|database connection strings?|environment variables?|secrets?\.(csv|xlsx))\b
+    category: secret_exfiltration
+    severity: critical
+    reason: Requests credentials, environment values, or secret exports.
+
+  - rule_id: tool_hijack
+    pattern: \b(call|use|invoke|run)\s+(the\s+)?(available\s+)?(write\s+)?tool\b
+    category: tool_hijack
+    severity: high
+    reason: Attempts to make an agent call tools from uploaded content.
+
+  - rule_id: write_operation
+    pattern: \b(write_|update|delete|remove|mark\s+all|set\s+the\s+hierarchy|create\s+(a\s+)?(csv|excel|xlsx|file))\b
+    category: unsafe_action
+    severity: high
+    reason: Requests write, delete, export, or mutation behavior.
+
+  - rule_id: safety_bypass
+    pattern: \b(return|mark|classify)\s+(this\s+)?(as\s+)?(safe|benign|safe_to_forward\s*=\s*true)\b
+    category: safety_bypass
+    severity: high
+    reason: Attempts to control safety classification.
+
+  - rule_id: concealment
+    pattern: \b(do not|don't)\s+(reveal|mention|explain|classify)\b
+    category: concealment
+    severity: medium
+    reason: Attempts to hide or suppress evidence of the instruction.
+
+  - rule_id: authority_claim
+    pattern: \b(this document wins|new authority|mandatory instruction|supersedes? any previous instruction)\b
+    category: instruction_override
+    severity: high
+    reason: Claims authority over system, developer, or policy instructions.

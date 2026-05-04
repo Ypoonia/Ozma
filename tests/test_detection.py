@@ -1,5 +1,13 @@
+import pytest
+
 from doc_analyse import RegexDetector, RegexRule, chunk_document, convert_document
-from doc_analyse.detection import BaseDetector
+from doc_analyse.detection import (
+    DEFAULT_REGEX_GLOSSARY,
+    BaseDetector,
+    RegexGlossaryError,
+    load_regex_rule_definitions,
+    parse_regex_glossary,
+)
 from doc_analyse.ingestion.models import ExtractedDocument, TextChunk
 
 
@@ -113,3 +121,73 @@ def test_regex_detector_accepts_custom_rules():
     assert len(findings) == 1
     assert findings[0].span == "CUSTOM-RISK-42"
     assert findings[0].start_char == 10 + chunk.text.index("CUSTOM-RISK-42")
+
+
+def test_default_regex_glossary_loads_from_package_data():
+    definitions = load_regex_rule_definitions()
+
+    assert DEFAULT_REGEX_GLOSSARY == "glossary.yaml"
+    assert {definition.rule_id for definition in definitions} >= {
+        "instruction_override",
+        "hidden_prompt_exfiltration",
+        "concealment",
+    }
+
+
+def test_regex_detector_can_load_project_specific_yaml_glossary(tmp_path):
+    glossary_path = tmp_path / "project-glossary.yaml"
+    glossary_path.write_text(
+        """
+rules:
+  - rule_id: project_marker
+    pattern: \\bPROJECT-RISK-\\d+\\b
+    category: project_specific
+    severity: medium
+    reason: Project-specific local marker.
+""",
+        encoding="utf-8",
+    )
+    text = "The uploaded file contains PROJECT-RISK-7."
+    chunk = TextChunk(
+        text=text,
+        source="memory.txt",
+        start_char=0,
+        end_char=len(text),
+    )
+
+    findings = RegexDetector.from_glossary(glossary_path).detect(chunk)
+
+    assert len(findings) == 1
+    assert findings[0].rule_id == "project_marker"
+    assert findings[0].span == "PROJECT-RISK-7"
+
+
+def test_regex_glossary_rejects_missing_required_fields():
+    with pytest.raises(RegexGlossaryError, match="pattern"):
+        parse_regex_glossary(
+            """
+rules:
+  - rule_id: missing_pattern
+    category: project_specific
+    severity: medium
+    reason: Missing pattern should fail loudly.
+""",
+        )
+
+
+def test_regex_glossary_rejects_invalid_patterns(tmp_path):
+    glossary_path = tmp_path / "bad-glossary.yaml"
+    glossary_path.write_text(
+        """
+rules:
+  - rule_id: bad_regex
+    pattern: "["
+    category: project_specific
+    severity: medium
+    reason: Invalid regex should fail loudly.
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RegexGlossaryError, match="Invalid regex pattern"):
+        RegexDetector.from_glossary(glossary_path)
