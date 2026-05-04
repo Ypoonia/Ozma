@@ -191,3 +191,53 @@ rules:
 
     with pytest.raises(RegexGlossaryError, match="Invalid regex pattern"):
         RegexDetector.from_glossary(glossary_path)
+
+
+def test_base_detector_detect_many_dedupes_and_sorts_findings():
+    class UnorderedDetector(BaseDetector):
+        def detect(self, chunk):
+            return (
+                self._build_finding(
+                    chunk=chunk,
+                    span="b",
+                    category="test",
+                    severity="low",
+                    reason="unordered",
+                    rule_id="b",
+                    start_char=5,
+                    end_char=6,
+                ),
+                self._build_finding(
+                    chunk=chunk,
+                    span="a",
+                    category="test",
+                    severity="low",
+                    reason="unordered",
+                    rule_id="a",
+                    start_char=1,
+                    end_char=2,
+                ),
+                self._build_finding(
+                    chunk=chunk,
+                    span="a",
+                    category="test",
+                    severity="low",
+                    reason="duplicate",
+                    rule_id="a",
+                    start_char=1,
+                    end_char=2,
+                ),
+            )
+
+    chunk = TextChunk(
+        text="abcdef",
+        source="memory.txt",
+        start_char=0,
+        end_char=6,
+    )
+    findings = UnorderedDetector().detect_many((chunk, chunk))
+
+    assert [(item.rule_id, item.start_char, item.end_char) for item in findings] == [
+        ("a", 1, 2),
+        ("b", 5, 6),
+    ]

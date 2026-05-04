@@ -42,18 +42,18 @@ def build_classifier(provider: str, **kwargs: Any) -> BaseClassifier:
     return classifier_type(**kwargs)
 
 
-def classifier_from_env(prefix: str = "DOC_ANALYSE_LLM") -> BaseClassifier:
+def classifier_from_env(prefix: str = "DOC_ANALYSE_LLM", **kwargs: Any) -> BaseClassifier:
     provider = os.getenv(f"{prefix}_PROVIDER", "openai").strip().lower()
     model = os.getenv(f"{prefix}_MODEL")
     api_key = os.getenv(f"{prefix}_API_KEY") or _provider_api_key(provider)
 
-    kwargs: Dict[str, Any] = {}
-    if model:
-        kwargs["model"] = model
-    if api_key:
-        kwargs["api_key"] = api_key
+    classifier_kwargs: Dict[str, Any] = dict(kwargs)
+    if model and "model" not in classifier_kwargs:
+        classifier_kwargs["model"] = model
+    if api_key and "api_key" not in classifier_kwargs:
+        classifier_kwargs["api_key"] = api_key
 
-    return build_classifier(provider, **kwargs)
+    return build_classifier(provider, **classifier_kwargs)
 
 
 def _provider_api_key(provider: str) -> str:

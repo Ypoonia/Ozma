@@ -7,6 +7,7 @@ from typing import Any, Optional
 PROMPT_PACKAGE = "doc_analyse.prompt"
 SYSTEM_PROMPT_FILE = "system.md"
 CLASSIFICATION_PROMPT_FILE = "classification.md"
+CLASSIFIER_AGENT_PROMPT_FILE = "classifieragent.md"
 TEXT_PLACEHOLDER = "{{ text }}"
 METADATA_PLACEHOLDER = "{{ metadata }}"
 
@@ -25,6 +26,10 @@ def load_default_classification_prompt(prompt_text: Optional[str] = None) -> str
         CLASSIFICATION_PROMPT_FILE,
         required_placeholders=(TEXT_PLACEHOLDER, METADATA_PLACEHOLDER),
     )
+
+
+def load_classifier_agent_prompt(prompt_text: Optional[str] = None) -> str:
+    return resolve_prompt_text(prompt_text, CLASSIFIER_AGENT_PROMPT_FILE)
 
 
 def render_classification_prompt(

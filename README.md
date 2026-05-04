@@ -81,6 +81,27 @@ chunks = chunk_document(document)
 findings = RegexDetector().detect_many(chunks)
 ```
 
+Run regex and Prompt Guard in parallel when the optional ML dependencies are installed:
+
+```bash
+python -m pip install -e ".[prompt-guard]"
+```
+
+```python
+from doc_analyse import ParallelDetector, PromptGuardDetector, RegexDetector
+
+detector = ParallelDetector([
+    RegexDetector(),
+    PromptGuardDetector(),
+])
+
+findings = detector.detect_many(chunks)
+```
+
+`PromptGuardDetector()` initializes the Hugging Face pipeline at construction time by
+default so parallel chunk fanout does not spend its first request loading the model.
+Pass `eager_load=False` when you want lazy startup instead.
+
 ## Project Layout
 
 Library code lives under `src/doc_analyse`. Tests live under `tests`.
