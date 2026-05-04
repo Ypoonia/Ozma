@@ -3,7 +3,7 @@ from pathlib import Path
 from doc_analyse.classifiers import ClassificationResult
 from doc_analyse.detection import BaseDetector
 from doc_analyse.ingestion import TextChunker
-from doc_analyse.orchestration import DocumentOrchestrator
+from doc_analyse.orchestration import DocumentOrchestrator, analyze_document_path
 from doc_analyse.workers import WorkerResult
 
 
@@ -71,6 +71,9 @@ class FakeWorkerPool:
 
         return tuple(results)
 
+    def close(self):
+        self.closed = True
+
 
 def test_orchestrator_end_to_end_with_index_traceability(tmp_path: Path):
     path = tmp_path / "doc.txt"
@@ -137,3 +140,62 @@ def test_orchestrator_routes_only_requires_llm_when_configured(tmp_path: Path):
     assert pool.calls == []
     assert result.verdict == "suspicious"
     assert any(chunk_result.cheap_findings for chunk_result in result.chunk_results)
+
+
+def test_orchestrator_context_manager_closes_worker_pool(tmp_path: Path):
+    path = tmp_path / "safe.txt"
+    path.write_text("safe", encoding="utf-8")
+    pool = FakeWorkerPool()
+    pool.closed = False
+
+    with DocumentOrchestrator(detector=RiskMarkerDetector(), worker_pool=pool) as orchestrator:
+        result = orchestrator.analyze_path(path)
+
+    assert result.verdict == "safe"
+    assert pool.closed is True
+
+
+def test_analyze_document_path_can_close_worker_pool(tmp_path: Path):
+    path = tmp_path / "safe.txt"
+    path.write_text("safe", encoding="utf-8")
+    pool = FakeWorkerPool()
+    pool.closed = False
+
+    result = analyze_document_path(
+        path,
+        detector=RiskMarkerDetector(),
+        worker_pool=pool,
+        close_worker_pool=True,
+    )
+
+    assert result.verdict == "safe"
+    assert pool.closed is True
+
+
+def test_orchestrator_normalizes_unknown_llm_verdict_to_suspicious(tmp_path: Path):
+    path = tmp_path / "doc.txt"
+    path.write_text("RISKY-INSTRUCTION", encoding="utf-8")
+
+    class UnknownVerdictPool(FakeWorkerPool):
+        def classify_chunks(self, chunks):
+            chunk = tuple(chunks)[0]
+            return (
+                WorkerResult(
+                    chunk=chunk,
+                    classification=ClassificationResult(
+                        verdict="typo-unsafe",
+                        confidence=0.6,
+                        reasons=("unknown",),
+                    ),
+                ),
+            )
+
+    orchestrator = DocumentOrchestrator(
+        detector=RiskMarkerDetector(),
+        worker_pool=UnknownVerdictPool(),
+    )
+
+    result = orchestrator.analyze_path(path)
+
+    assert result.verdict == "suspicious"
+    assert result.chunk_results[0].final_verdict == "suspicious"

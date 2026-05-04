@@ -1,3 +1,12 @@
+"""Document-level orchestration for ingestion, cheap detection, and LLM validation.
+
+Primary flow:
+1) ingest and chunk one document
+2) run cheap detectors over all chunks
+3) route flagged chunks to stateless classifier workers
+4) aggregate chunk results into a final document verdict
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -5,10 +14,21 @@ from pathlib import Path
 from typing import Iterable, Optional, Union
 
 from doc_analyse.classifiers import ClassificationResult
+from doc_analyse.classifiers.base import VALID_VERDICTS
 from doc_analyse.detection import BaseDetector, DetectionFinding
 from doc_analyse.ingestion import ConverterRegistry, IngestedDocument, TextChunker, ingest_document
 from doc_analyse.ingestion.models import TextChunk
 from doc_analyse.workers import ClassifierWorkerPool
+
+VERDICT_SAFE = "safe"
+VERDICT_SUSPICIOUS = "suspicious"
+VERDICT_UNSAFE = "unsafe"
+
+_ORCHESTRATION_VERDICTS = {VERDICT_SAFE, VERDICT_SUSPICIOUS, VERDICT_UNSAFE}
+if _ORCHESTRATION_VERDICTS - VALID_VERDICTS:  # pragma: no cover - import-time invariant guard
+    raise RuntimeError(
+        "Orchestration verdict constants must stay aligned with classifier verdicts."
+    )
 
 
 @dataclass(frozen=True)
@@ -29,11 +49,11 @@ class DocumentAnalysisResult:
     reasons: tuple[str, ...]
     unmapped_cheap_findings: tuple[DetectionFinding, ...] = ()
 
-    def chunk_result(self, index: int) -> ChunkAnalysisResult:
-        return self.chunk_results[index]
+    def chunk_result(self, chunk_index: int) -> ChunkAnalysisResult:
+        return self.chunk_results[chunk_index]
 
-    def chunk_text(self, index: int) -> str:
-        chunk = self.chunk_results[index].chunk
+    def chunk_text(self, chunk_index: int) -> str:
+        chunk = self.chunk_results[chunk_index].chunk
         return self.ingested_document.text[chunk.start_char : chunk.end_char]
 
 
@@ -42,6 +62,22 @@ class DocumentOrchestrator:
     detector: BaseDetector
     worker_pool: ClassifierWorkerPool
     route_all_flagged_chunks: bool = True
+    _closed: bool = False
+
+    def __enter__(self) -> DocumentOrchestrator:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+
+        close_pool = getattr(self.worker_pool, "close", None)
+        if callable(close_pool):
+            close_pool()
+        self._closed = True
 
     def analyze_path(
         self,
@@ -108,11 +144,11 @@ class DocumentOrchestrator:
         llm_classification: Optional[ClassificationResult],
     ) -> ChunkAnalysisResult:
         if llm_classification is not None:
-            final_verdict = llm_classification.verdict
+            final_verdict = _normalize_verdict(llm_classification.verdict)
         elif cheap_findings:
-            final_verdict = "suspicious"
+            final_verdict = VERDICT_SUSPICIOUS
         else:
-            final_verdict = "safe"
+            final_verdict = VERDICT_SAFE
 
         return ChunkAnalysisResult(
             chunk_index=chunk_index,
@@ -174,17 +210,17 @@ def _aggregate_document_verdict(
     chunk_results: tuple[ChunkAnalysisResult, ...],
 ) -> tuple[str, tuple[str, ...]]:
     unsafe_indices = tuple(
-        result.chunk_index for result in chunk_results if result.final_verdict == "unsafe"
+        result.chunk_index for result in chunk_results if result.final_verdict == VERDICT_UNSAFE
     )
     suspicious_indices = tuple(
-        result.chunk_index for result in chunk_results if result.final_verdict == "suspicious"
+        result.chunk_index for result in chunk_results if result.final_verdict == VERDICT_SUSPICIOUS
     )
 
     if unsafe_indices:
-        return "unsafe", (f"Unsafe chunk indices: {list(unsafe_indices)}",)
+        return VERDICT_UNSAFE, (f"Unsafe chunk indices: {list(unsafe_indices)}",)
     if suspicious_indices:
-        return "suspicious", (f"Suspicious chunk indices: {list(suspicious_indices)}",)
-    return "safe", ("No suspicious or unsafe chunks detected.",)
+        return VERDICT_SUSPICIOUS, (f"Suspicious chunk indices: {list(suspicious_indices)}",)
+    return VERDICT_SAFE, ("No suspicious or unsafe chunks detected.",)
 
 
 def analyze_document_path(
@@ -195,10 +231,22 @@ def analyze_document_path(
     registry: Optional[ConverterRegistry] = None,
     chunker: Optional[TextChunker] = None,
     route_all_flagged_chunks: bool = True,
+    close_worker_pool: bool = False,
 ) -> DocumentAnalysisResult:
     orchestrator = DocumentOrchestrator(
         detector=detector,
         worker_pool=worker_pool,
         route_all_flagged_chunks=route_all_flagged_chunks,
     )
+    if close_worker_pool:
+        with orchestrator:
+            return orchestrator.analyze_path(path, registry=registry, chunker=chunker)
+
     return orchestrator.analyze_path(path, registry=registry, chunker=chunker)
+
+
+def _normalize_verdict(raw_verdict: str) -> str:
+    verdict = str(raw_verdict).strip().lower()
+    if verdict in _ORCHESTRATION_VERDICTS:
+        return verdict
+    return VERDICT_SUSPICIOUS
