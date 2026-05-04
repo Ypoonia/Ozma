@@ -39,7 +39,7 @@ class StatelessClassifierWorker:
 
     def classify_chunk(self, chunk: TextChunk) -> WorkerResult:
         if not isinstance(chunk.text, str) or not chunk.text.strip():
-            raise WorkerPoolError("Worker chunk text must be a non-empty string.")
+            raise ValueError("Worker chunk text must be a non-empty string.")
 
         classification = self._classifier().classify(
             text=chunk.text,
@@ -61,6 +61,13 @@ class StatelessClassifierWorker:
 
 
 class ClassifierWorkerPool:
+    """Thread pool that fans out chunk classification across stateless workers.
+
+    The executor is created once at construction time and reused across all
+    ``classify_chunks`` calls. Use the pool as a context manager — or call
+    ``close()`` explicitly — to shut down the executor when done.
+    """
+
     def __init__(
         self,
         worker: StatelessClassifierWorker,
@@ -68,25 +75,34 @@ class ClassifierWorkerPool:
     ) -> None:
         self.worker = worker
         self.max_workers = max_workers
+        self._executor = ThreadPoolExecutor(max_workers=max_workers)
+
+    def __enter__(self) -> ClassifierWorkerPool:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Shutdown the executor, waiting for in-flight tasks to finish."""
+        self._executor.shutdown(wait=True)
 
     def classify_chunks(self, chunks: Iterable[TextChunk]) -> tuple[WorkerResult, ...]:
         indexed_chunks = tuple(enumerate(chunks))
         if not indexed_chunks:
             return ()
 
-        resolved_max_workers = self.max_workers or min(32, len(indexed_chunks))
-        results_by_index = {}
-        with ThreadPoolExecutor(max_workers=resolved_max_workers) as executor:
-            futures = {
-                executor.submit(self.worker.classify_chunk, chunk): index
-                for index, chunk in indexed_chunks
-            }
-            for future in as_completed(futures):
-                index = futures[future]
-                try:
-                    results_by_index[index] = future.result()
-                except Exception as exc:
-                    raise WorkerPoolError(f"Worker failed for chunk index {index}: {exc}") from exc
+        results_by_index: dict[int, WorkerResult] = {}
+        futures = {
+            self._executor.submit(self.worker.classify_chunk, chunk): index
+            for index, chunk in indexed_chunks
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                results_by_index[index] = future.result()
+            except Exception as exc:
+                raise WorkerPoolError(f"Worker failed for chunk index {index}: {exc}") from exc
 
         return tuple(results_by_index[index] for index, _ in indexed_chunks)
 

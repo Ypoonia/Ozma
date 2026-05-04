@@ -60,7 +60,6 @@ def test_prompt_guard_detector_flags_malicious_chunks():
     assert findings[0].start_char == 20
     assert findings[0].end_char == 53
     assert findings[0].requires_llm_validation is True
-    assert findings[0].metadata["requires_llm_validation"] is True
     assert classifier.calls == [chunk.text]
 
 
@@ -198,7 +197,6 @@ def test_parallel_detector_turns_detector_failure_into_uncertain_finding():
     assert len(findings) == 1
     assert findings[0].category == "detector_error"
     assert findings[0].requires_llm_validation is True
-    assert findings[0].metadata["requires_llm_validation"] is True
     assert "model unavailable" in findings[0].metadata["error"]
 
 

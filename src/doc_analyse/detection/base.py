@@ -42,16 +42,15 @@ class BaseDetector(ABC):
         )
 
     @staticmethod
-    def _finding_key(finding: DetectionFinding) -> tuple[str, int, int, str]:
+    def _finding_key(finding: DetectionFinding) -> tuple[str, int, int]:
         return (
             finding.rule_id,
             finding.start_char,
             finding.end_char,
-            finding.span,
         )
 
+    @staticmethod
     def _build_finding(
-        self,
         *,
         chunk: TextChunk,
         span: str,
@@ -68,9 +67,6 @@ class BaseDetector(ABC):
         resolved_metadata = dict(chunk.metadata)
         if metadata:
             resolved_metadata.update(metadata)
-        if requires_llm_validation:
-            # Backward compatibility while callers migrate to the first-class field.
-            resolved_metadata["requires_llm_validation"] = True
 
         return DetectionFinding(
             span=span,
@@ -127,7 +123,7 @@ def _detector_error_finding(
     exc: Exception,
 ) -> DetectionFinding:
     detector_name = detector.__class__.__name__
-    return detector._build_finding(
+    return BaseDetector._build_finding(
         chunk=chunk,
         span=chunk.text,
         category="detector_error",

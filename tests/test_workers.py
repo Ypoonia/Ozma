@@ -39,14 +39,14 @@ def test_worker_pool_classifies_chunks_in_input_order():
     worker = StatelessClassifierWorker(
         classifier_factory=lambda: FakeWorkerClassifier(delay_by_text=delay_by_text)
     )
-    pool = ClassifierWorkerPool(worker=worker, max_workers=3)
     chunks = (
         TextChunk(text="chunk-0", source="doc.txt", start_char=0, end_char=7),
         TextChunk(text="chunk-1", source="doc.txt", start_char=8, end_char=15),
         TextChunk(text="chunk-2", source="doc.txt", start_char=16, end_char=23),
     )
 
-    results = pool.classify_chunks(chunks)
+    with ClassifierWorkerPool(worker=worker, max_workers=3) as pool:
+        results = pool.classify_chunks(chunks)
 
     assert [result.chunk.text for result in results] == ["chunk-0", "chunk-1", "chunk-2"]
     assert all(result.classification.verdict == "suspicious" for result in results)
@@ -91,13 +91,13 @@ def test_worker_uses_thread_local_classifier_cache():
         return FakeWorkerClassifier(delay_by_text={"busy": 0.01}, thread_hits=thread_hits)
 
     worker = StatelessClassifierWorker(classifier_factory=factory)
-    pool = ClassifierWorkerPool(worker=worker, max_workers=3)
     chunks = tuple(
         TextChunk(text="busy", source="doc.txt", start_char=index, end_char=index + 4)
         for index in range(12)
     )
 
-    pool.classify_chunks(chunks)
+    with ClassifierWorkerPool(worker=worker, max_workers=3) as pool:
+        pool.classify_chunks(chunks)
 
     assert 1 <= len(factory_calls) <= 3
     assert len(factory_calls) == len(thread_hits)
@@ -105,14 +105,33 @@ def test_worker_uses_thread_local_classifier_cache():
 
 def test_worker_pool_wraps_worker_errors_with_chunk_index():
     worker = StatelessClassifierWorker(classifier_factory=lambda: FakeWorkerClassifier())
-    pool = ClassifierWorkerPool(worker=worker, max_workers=1)
     chunks = (
         TextChunk(text="good", source="doc.txt", start_char=0, end_char=4),
         TextChunk(text="   ", source="doc.txt", start_char=5, end_char=8),
     )
 
-    with pytest.raises(WorkerPoolError, match="chunk index 1"):
-        pool.classify_chunks(chunks)
+    with ClassifierWorkerPool(worker=worker, max_workers=1) as pool:
+        with pytest.raises(WorkerPoolError, match="chunk index 1"):
+            pool.classify_chunks(chunks)
+
+
+def test_classifier_worker_pool_returns_empty_for_no_chunks():
+    worker = StatelessClassifierWorker(classifier_factory=lambda: FakeWorkerClassifier())
+    with ClassifierWorkerPool(worker=worker) as pool:
+        assert pool.classify_chunks([]) == ()
+
+
+def test_classifier_worker_pool_context_manager_shuts_down_executor():
+    worker = StatelessClassifierWorker(classifier_factory=lambda: FakeWorkerClassifier())
+    pool = ClassifierWorkerPool(worker=worker)
+    chunk = TextChunk(text="hello", source="doc.txt", start_char=0, end_char=5)
+
+    with pool:
+        pool.classify_chunks((chunk,))
+
+    # After close(), the executor rejects new submissions.
+    with pytest.raises(RuntimeError):
+        pool.classify_chunks((chunk,))
 
 
 def test_build_stateless_classifier_factory_uses_classifier_agent_prompt(monkeypatch):

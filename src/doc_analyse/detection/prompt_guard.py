@@ -57,27 +57,39 @@ class PromptGuardDetector(BaseDetector):
 
         scores = _normalise_scores(self.load()(chunk.text))
         malicious_score = scores.get("malicious", 0.0)
+        pg_metadata = {"detector": "PromptGuardDetector", "model": self.model}
+
         if malicious_score >= self.malicious_threshold:
             return (
-                self._finding(
+                self._build_finding(
                     chunk=chunk,
-                    score=malicious_score,
+                    span=chunk.text,
                     category="prompt_guard_malicious",
                     severity="high",
                     reason="Prompt Guard classified this chunk as malicious.",
+                    rule_id="prompt_guard",
+                    start_char=chunk.start_char,
+                    end_char=chunk.end_char,
                     requires_llm_validation=True,
+                    score=malicious_score,
+                    metadata=pg_metadata,
                 ),
             )
 
         if malicious_score >= self.uncertain_threshold:
             return (
-                self._finding(
+                self._build_finding(
                     chunk=chunk,
-                    score=malicious_score,
+                    span=chunk.text,
                     category="prompt_guard_uncertain",
                     severity="medium",
                     reason="Prompt Guard score is uncertain enough to require LLM validation.",
+                    rule_id="prompt_guard",
+                    start_char=chunk.start_char,
+                    end_char=chunk.end_char,
                     requires_llm_validation=True,
+                    score=malicious_score,
+                    metadata=pg_metadata,
                 ),
             )
 
@@ -111,32 +123,6 @@ class PromptGuardDetector(BaseDetector):
             max_length=512,
             device=self.device,
             **self.pipeline_options,
-        )
-
-    def _finding(
-        self,
-        chunk: TextChunk,
-        score: float,
-        category: str,
-        severity: str,
-        reason: str,
-        requires_llm_validation: bool,
-    ) -> DetectionFinding:
-        return self._build_finding(
-            chunk=chunk,
-            span=chunk.text,
-            category=category,
-            severity=severity,
-            reason=reason,
-            rule_id="prompt_guard",
-            start_char=chunk.start_char,
-            end_char=chunk.end_char,
-            requires_llm_validation=requires_llm_validation,
-            score=score,
-            metadata={
-                "detector": "PromptGuardDetector",
-                "model": self.model,
-            },
         )
 
 
