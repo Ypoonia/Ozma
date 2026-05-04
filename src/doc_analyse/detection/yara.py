@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+from importlib.resources import files
+from pathlib import Path
+from typing import Any, Iterable, Optional, Union
+
+try:
+    import yara
+except ImportError:  # pragma: no cover
+    yara = None  # type: ignore[assignment]
+
+from doc_analyse.detection.base import BaseDetector
+from doc_analyse.detection.models import DetectionFinding
+from doc_analyse.ingestion.models import TextChunk
+
+DEFAULT_YARA_RULES_FILE = "default.yara"
+_YARA_PACKAGE = "doc_analyse.detection"
+
+
+class YaraGlossaryError(ValueError):
+    """Raised when a YARA rules file is missing, invalid, or cannot be compiled."""
+
+
+def _read_yara_source(path: Optional[Union[str, Path]]) -> str:
+    try:
+        if path is None:
+            return files(_YARA_PACKAGE).joinpath(DEFAULT_YARA_RULES_FILE).read_text(encoding="utf-8")
+        return Path(str(path)).read_text(encoding="utf-8")
+    except OSError as exc:
+        source = DEFAULT_YARA_RULES_FILE if path is None else str(path)
+        raise YaraGlossaryError(f"Could not read YARA rules file '{source}': {exc}") from exc
+
+
+def compile_yara_rules(source: str, *, origin: str = "<memory>") -> Any:
+    """Compile YARA rules from source text."""
+    if yara is None:
+        raise YaraGlossaryError(
+            "yara-python is required. Install with: pip install 'doc-analyse[yara]'"
+        )
+    try:
+        return yara.compile(source=source)
+    except (yara.Error, yara.SyntaxError) as exc:
+        raise YaraGlossaryError(f"Failed to compile YARA rules: {exc}") from exc
+
+
+class YaraDetector(BaseDetector):
+    """YARA-based cheap detector for prompt-injection-like evidence."""
+
+    def __init__(self, compiled: Optional[Any] = None) -> None:
+        self._compiled = compiled if compiled is not None else _DEFAULT_COMPILED_RULES
+
+    @classmethod
+    def from_file(cls, path: Union[str, Path]) -> YaraDetector:
+        """Build a detector from a standalone .yar file."""
+        try:
+            source = Path(str(path)).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise YaraGlossaryError(f"Could not read YARA rules file '{path}': {exc}") from exc
+        try:
+            compiled = yara.compile(source=source)
+        except (yara.Error, yara.SyntaxError) as exc:
+            raise YaraGlossaryError(f"Failed to compile YARA rules from '{path}': {exc}") from exc
+        return cls(compiled=compiled)
+
+    def detect(self, chunk: TextChunk) -> tuple[DetectionFinding, ...]:
+        if not isinstance(chunk.text, str) or not chunk.text.strip():
+            return ()
+
+        encoded = chunk.text.encode("utf-8")
+        results = self._compiled.match(data=encoded)
+
+        findings = []
+        for rule in results:
+            rule_meta = dict(rule.meta)
+
+            for string_match in rule.strings:
+                string_id = string_match.identifier
+                for instance in string_match.instances:
+                    matched_bytes = instance.matched_data
+                    if isinstance(matched_bytes, bytes):
+                        span_text = matched_bytes.decode("utf-8", errors="replace")
+                    else:
+                        span_text = matched_bytes
+                    if not span_text.strip():
+                        continue
+
+                    byte_offset = instance.offset
+                    byte_length = instance.matched_length
+
+                    findings.append(
+                        self._build_finding(
+                            chunk=chunk,
+                            span=span_text,
+                            category=str(rule_meta.get("category", "unknown")),
+                            severity=str(rule_meta.get("severity", "medium")),
+                            reason=str(rule_meta.get("reason", "YARA rule matched.")),
+                            rule_id=str(rule_meta.get("rule_id", rule.rule)),
+                            start_char=chunk.start_char + byte_offset,
+                            end_char=chunk.start_char + byte_offset + byte_length,
+                            requires_llm_validation=True,
+                        )
+                    )
+
+        return self._finalize_findings(findings)
+
+
+# ---------------------------------------------------------------------------
+# Module-level compiled rules
+# ---------------------------------------------------------------------------
+
+_DEFAULT_COMPILED_RULES: Optional[Any] = None
+
+
+def _load_default_rules() -> Any:
+    if yara is None:
+        return None
+    try:
+        source = files(_YARA_PACKAGE).joinpath(DEFAULT_YARA_RULES_FILE).read_text(encoding="utf-8")
+        return yara.compile(source=source)
+    except Exception:
+        return None
+
+
+_DEFAULT_COMPILED_RULES = _load_default_rules()
