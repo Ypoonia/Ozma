@@ -33,6 +33,10 @@ llm = [
     "groq",
     "openai",
 ]
+prompt-guard = [
+    "torch",
+    "transformers",
+]
 dev = [
     "pytest",
     "ruff",
