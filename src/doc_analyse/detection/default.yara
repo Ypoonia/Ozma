@@ -117,7 +117,7 @@ rule concealment {
     reason     = "Attempts to hide or suppress evidence of the instruction."
   strings:
     $a = /do\s+not\s+(reveal|mention|explain|classify)/ nocase
-    $b = /don.t\s+(reveal|mention|explain|classify)/ nocase
+    $b = /don't\s+(reveal|mention|explain|classify)/ nocase
   condition:
     $a or $b
 }

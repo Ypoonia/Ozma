@@ -41,7 +41,7 @@ def compile_yara_rules(source: str, *, origin: str = "<memory>") -> Any:
     try:
         return yara.compile(source=source)
     except (yara.Error, yara.SyntaxError) as exc:
-        raise YaraGlossaryError(f"Failed to compile YARA rules: {exc}") from exc
+        raise YaraGlossaryError(f"Failed to compile YARA rules from '{origin}': {exc}") from exc
 
 
 class YaraDetector(BaseDetector):
@@ -53,26 +53,24 @@ class YaraDetector(BaseDetector):
     @classmethod
     def from_file(cls, path: Union[str, Path]) -> YaraDetector:
         """Build a detector from a standalone .yar file."""
-        if yara is None:
-            raise YaraGlossaryError(
-                "yara-python is required. Install with: pip install 'doc-analyse[yara]'"
-            )
-        try:
-            source = Path(str(path)).read_text(encoding="utf-8")
-        except OSError as exc:
-            raise YaraGlossaryError(f"Could not read YARA rules file '{path}': {exc}") from exc
-        try:
-            compiled = yara.compile(source=source)
-        except (yara.Error, yara.SyntaxError) as exc:
-            raise YaraGlossaryError(f"Failed to compile YARA rules from '{path}': {exc}") from exc
+        source = _read_yara_source(path)
+        compiled = compile_yara_rules(source, origin=str(path))
         return cls(compiled=compiled)
 
     def detect(self, chunk: TextChunk) -> tuple[DetectionFinding, ...]:
         if not isinstance(chunk.text, str) or not chunk.text.strip():
             return ()
         if self._compiled is None:
+            # `_DEFAULT_COMPILED_RULES` is None either because yara-python is not
+            # installed (yara is None) or because the bundled rules failed to compile.
+            # Distinguish the two cases so the error message is actionable.
+            if yara is None:
+                raise YaraGlossaryError(
+                    "yara-python is required. Install with: pip install 'doc-analyse[yara]'"
+                )
             raise YaraGlossaryError(
-                "yara-python is required. Install with: pip install 'doc-analyse[yara]'"
+                "Default YARA rules failed to load. "
+                "Reinstall the package or supply custom rules via from_file()."
             )
 
         encoded = chunk.text.encode("utf-8")

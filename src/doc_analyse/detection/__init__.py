@@ -9,6 +9,7 @@ from doc_analyse.detection.yara import (
     DEFAULT_YARA_RULES_FILE,
     YaraDetector,
     YaraGlossaryError,
+    compile_yara_rules,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "PromptGuardDetector",
     "YaraDetector",
     "YaraGlossaryError",
+    "compile_yara_rules",
 ]

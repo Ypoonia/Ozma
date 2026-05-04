@@ -22,6 +22,7 @@ from doc_analyse.detection import (
     PromptGuardDetector,
     YaraDetector,
     YaraGlossaryError,
+    compile_yara_rules,
 )
 from doc_analyse.ingestion import (
     BaseDocumentConverter,
@@ -94,6 +95,7 @@ __all__ = [
     "WorkerResult",
     "YaraDetector",
     "YaraGlossaryError",
+    "compile_yara_rules",
     "build_classifier",
     "build_classifier_worker_pool",
     "build_stateless_classifier_factory",
