@@ -97,16 +97,22 @@ class ParallelDetector(BaseDetector):
         self.max_workers = max_workers
 
     def detect(self, chunk: TextChunk) -> tuple[DetectionFinding, ...]:
-        if not self.detectors:
+        return self.detect_many((chunk,))
+
+    def detect_many(self, chunks: Iterable[TextChunk]) -> tuple[DetectionFinding, ...]:
+        chunk_list = tuple(chunks)
+        if not self.detectors or not chunk_list:
             return ()
 
         findings = []
         with ThreadPoolExecutor(max_workers=self.max_workers or len(self.detectors)) as executor:
             futures = {
-                executor.submit(detector.detect, chunk): detector for detector in self.detectors
+                executor.submit(detector.detect, chunk): (detector, chunk)
+                for chunk in chunk_list
+                for detector in self.detectors
             }
             for future in as_completed(futures):
-                detector = futures[future]
+                detector, chunk = futures[future]
                 try:
                     findings.extend(future.result())
                 except Exception as exc:

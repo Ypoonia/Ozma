@@ -3,6 +3,7 @@ from threading import Barrier
 
 import pytest
 
+import doc_analyse.detection.base as detection_base
 from doc_analyse import ParallelDetector, PromptGuardDetector, RegexDetector
 from doc_analyse.detection import BaseDetector
 from doc_analyse.detection.prompt_guard import PromptGuardDependencyError
@@ -32,6 +33,11 @@ class FakePipelineFactory:
 class FailingDetector(BaseDetector):
     def detect(self, chunk):
         raise RuntimeError("model unavailable")
+
+
+class EmptyDetector(BaseDetector):
+    def detect(self, chunk):
+        return ()
 
 
 def test_prompt_guard_detector_flags_malicious_chunks():
@@ -194,3 +200,51 @@ def test_parallel_detector_turns_detector_failure_into_uncertain_finding():
     assert findings[0].requires_llm_validation is True
     assert findings[0].metadata["requires_llm_validation"] is True
     assert "model unavailable" in findings[0].metadata["error"]
+
+
+def test_parallel_detector_detect_many_uses_one_executor(monkeypatch):
+    created = []
+    real_executor = detection_base.ThreadPoolExecutor
+
+    class CountingExecutor:
+        def __init__(self, *args, **kwargs):
+            created.append(1)
+            self._inner = real_executor(*args, **kwargs)
+
+        def __enter__(self):
+            return self._inner.__enter__()
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._inner.__exit__(exc_type, exc, tb)
+
+    monkeypatch.setattr(detection_base, "ThreadPoolExecutor", CountingExecutor)
+    detector = ParallelDetector([EmptyDetector(), EmptyDetector()])
+    chunks = tuple(
+        TextChunk(text=f"chunk-{index}", source="doc.txt", start_char=index, end_char=index + 1)
+        for index in range(5)
+    )
+
+    detector.detect_many(chunks)
+
+    assert len(created) == 1
+
+
+def test_parallel_detector_detect_many_finalizes_once():
+    class TrackingParallelDetector(ParallelDetector):
+        def __init__(self, detectors):
+            super().__init__(detectors)
+            self.finalize_calls = 0
+
+        def _finalize_findings(self, findings):
+            self.finalize_calls += 1
+            return super()._finalize_findings(findings)
+
+    detector = TrackingParallelDetector([EmptyDetector(), EmptyDetector()])
+    chunks = (
+        TextChunk(text="a", source="doc.txt", start_char=0, end_char=1),
+        TextChunk(text="b", source="doc.txt", start_char=2, end_char=3),
+    )
+
+    detector.detect_many(chunks)
+
+    assert detector.finalize_calls == 1
