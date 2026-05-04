@@ -17,6 +17,7 @@ dependencies = [
     "pymupdf",
     "pypdf",
     "pytesseract",
+    "PyYAML",
     "python-docx",
     "python-dotenv",
     "tqdm",
@@ -41,7 +42,7 @@ dev = [
 package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
-doc_analyse = ["prompt/*.md"]
+doc_analyse = ["detection/*.yaml", "prompt/*.md"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

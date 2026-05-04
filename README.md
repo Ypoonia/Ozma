@@ -69,6 +69,18 @@ Install conversion dependencies when you want formats beyond plain text and Mark
 python -m pip install -e ".[conversion]"
 ```
 
+## Cheap Detection
+
+Run local regex detection before sending evidence to any LLM provider:
+
+```python
+from doc_analyse import RegexDetector, chunk_document, convert_document
+
+document = convert_document("policy.txt")
+chunks = chunk_document(document)
+findings = RegexDetector().detect_many(chunks)
+```
+
 ## Project Layout
 
 Library code lives under `src/doc_analyse`. Tests live under `tests`.
