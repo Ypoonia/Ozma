@@ -40,7 +40,6 @@ from doc_analyse.ingestion import (
     UnsupportedDocumentError,
     chunk_document,
     convert_document,
-    extract_document,
     ingest_document,
 )
 from doc_analyse.verifier import DocumentVerifier
@@ -82,7 +81,6 @@ __all__ = [
     "classifier_from_env",
     "compile_regex_rules",
     "convert_document",
-    "extract_document",
     "ingest_document",
     "load_regex_rule_definitions",
     "parse_regex_glossary",

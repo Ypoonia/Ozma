@@ -12,7 +12,6 @@ from doc_analyse.ingestion import (
     UnsupportedDocumentError,
     chunk_document,
     convert_document,
-    extract_document,
     ingest_document,
 )
 from doc_analyse.ingestion.models import ExtractedDocument
@@ -64,15 +63,6 @@ def test_convert_document_rejects_empty_text(tmp_path: Path):
 
     with pytest.raises(DocumentConversionError, match="convertible text"):
         convert_document(path)
-
-
-def test_extract_document_keeps_compatibility_alias(tmp_path: Path):
-    path = tmp_path / "sample.md"
-    path.write_text("hello", encoding="utf-8")
-
-    document = extract_document(path)
-
-    assert document.text == "hello"
 
 
 def test_markitdown_converter_normalizes_any_upload_to_document(tmp_path: Path):
