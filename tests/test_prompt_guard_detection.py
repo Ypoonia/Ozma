@@ -15,6 +15,16 @@ class FakePromptGuardClassifier:
         return self.output
 
 
+class FakePipelineFactory:
+    def __init__(self, classifier):
+        self.classifier = classifier
+        self.calls = []
+
+    def __call__(self, *args, **kwargs):
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return self.classifier
+
+
 class FailingDetector:
     def detect(self, chunk):
         raise RuntimeError("model unavailable")
@@ -80,12 +90,34 @@ def test_prompt_guard_detector_validates_threshold_order():
         )
 
 
-def test_prompt_guard_detector_raises_clear_dependency_error_when_missing(monkeypatch):
-    def fail_import(*args, **kwargs):
-        raise ImportError("missing")
+def test_prompt_guard_detector_eager_loads_pipeline_by_default(monkeypatch):
+    classifier = FakePromptGuardClassifier([{"label": "BENIGN", "score": 0.99}])
+    factory = FakePipelineFactory(classifier)
+    monkeypatch.setattr(PromptGuardDetector, "_build_classifier", lambda self: factory())
 
-    monkeypatch.setattr("builtins.__import__", fail_import)
     detector = PromptGuardDetector()
+
+    assert detector.load() is classifier
+    assert len(factory.calls) == 1
+
+
+def test_prompt_guard_detector_raises_clear_dependency_error_when_missing(monkeypatch):
+    monkeypatch.setattr(
+        PromptGuardDetector,
+        "_build_classifier",
+        lambda self: (_ for _ in ()).throw(PromptGuardDependencyError("missing")),
+    )
+
+    with pytest.raises(PromptGuardDependencyError):
+        PromptGuardDetector()
+
+
+def test_prompt_guard_detector_can_opt_into_lazy_loading(monkeypatch):
+    def fail_build(*args, **kwargs):
+        raise PromptGuardDependencyError("missing")
+
+    monkeypatch.setattr(PromptGuardDetector, "_build_classifier", fail_build)
+    detector = PromptGuardDetector(eager_load=False)
 
     with pytest.raises(PromptGuardDependencyError):
         detector.detect(

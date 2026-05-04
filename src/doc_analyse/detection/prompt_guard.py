@@ -16,7 +16,12 @@ class PromptGuardDependencyError(RuntimeError):
 
 
 class PromptGuardDetector(BaseDetector):
-    """Cheap ML detector backed by Meta Llama Prompt Guard 2."""
+    """Cheap ML detector backed by Meta Llama Prompt Guard 2.
+
+    The default behavior is to initialize the Hugging Face pipeline during
+    detector construction so worker fanout does not pay the cold-start cost on
+    the first chunk.
+    """
 
     def __init__(
         self,
@@ -25,6 +30,7 @@ class PromptGuardDetector(BaseDetector):
         malicious_threshold: float = DEFAULT_MALICIOUS_THRESHOLD,
         uncertain_threshold: float = DEFAULT_UNCERTAIN_THRESHOLD,
         device: int = -1,
+        eager_load: bool = True,
         **pipeline_options: Any,
     ) -> None:
         if not 0.0 <= uncertain_threshold <= malicious_threshold <= 1.0:
@@ -37,13 +43,17 @@ class PromptGuardDetector(BaseDetector):
         self.malicious_threshold = malicious_threshold
         self.uncertain_threshold = uncertain_threshold
         self.device = device
+        self.eager_load = eager_load
         self.pipeline_options = pipeline_options
+
+        if self._classifier is None and self.eager_load:
+            self.load()
 
     def detect(self, chunk: TextChunk) -> tuple[DetectionFinding, ...]:
         if not isinstance(chunk.text, str) or not chunk.text.strip():
             return ()
 
-        scores = _normalise_scores(self._client()(chunk.text))
+        scores = _normalise_scores(self.load()(chunk.text))
         malicious_score = scores.get("malicious", 0.0)
         if malicious_score >= self.malicious_threshold:
             return (
@@ -71,10 +81,15 @@ class PromptGuardDetector(BaseDetector):
 
         return ()
 
-    def _client(self) -> Any:
+    def load(self) -> Any:
+        """Return the cached classifier, building it once when needed."""
         if self._classifier is not None:
             return self._classifier
 
+        self._classifier = self._build_classifier()
+        return self._classifier
+
+    def _build_classifier(self) -> Any:
         try:
             from transformers import pipeline
         except ImportError as exc:
@@ -83,7 +98,7 @@ class PromptGuardDetector(BaseDetector):
                 "Install with: pip install -e '.[prompt-guard]'"
             ) from exc
 
-        self._classifier = pipeline(
+        return pipeline(
             "text-classification",
             model=self.model,
             top_k=None,
@@ -92,7 +107,6 @@ class PromptGuardDetector(BaseDetector):
             device=self.device,
             **self.pipeline_options,
         )
-        return self._classifier
 
     def _finding(
         self,
