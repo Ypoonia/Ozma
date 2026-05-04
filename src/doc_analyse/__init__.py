@@ -46,6 +46,12 @@ from doc_analyse.ingestion import (
     extract_document,
     ingest_document,
 )
+from doc_analyse.orchestration import (
+    ChunkAnalysisResult,
+    DocumentAnalysisResult,
+    DocumentOrchestrator,
+    analyze_document_path,
+)
 from doc_analyse.verifier import DocumentVerifier
 from doc_analyse.workers import (
     ClassifierWorkerPool,
@@ -62,6 +68,7 @@ __all__ = [
     "BaseClassifier",
     "BaseDetector",
     "ClassificationResult",
+    "ChunkAnalysisResult",
     "ClassifierDependencyError",
     "ClassifierMessage",
     "ClassifierPromptError",
@@ -69,6 +76,8 @@ __all__ = [
     "ConverterDependencyError",
     "ConverterRegistry",
     "DocumentConversionError",
+    "DocumentAnalysisResult",
+    "DocumentOrchestrator",
     "DocumentSegment",
     "DocumentVerifier",
     "DEFAULT_REGEX_GLOSSARY",
@@ -96,6 +105,7 @@ __all__ = [
     "build_classifier",
     "build_classifier_worker_pool",
     "build_stateless_classifier_factory",
+    "analyze_document_path",
     "chunk_document",
     "classifier_from_env",
     "compile_regex_rules",
