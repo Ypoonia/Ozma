@@ -47,6 +47,14 @@ from doc_analyse.ingestion import (
     ingest_document,
 )
 from doc_analyse.verifier import DocumentVerifier
+from doc_analyse.workers import (
+    ClassifierWorkerPool,
+    StatelessClassifierWorker,
+    WorkerPoolError,
+    WorkerResult,
+    build_classifier_worker_pool,
+    build_stateless_classifier_factory,
+)
 
 __all__ = [
     "AnthropicClassifier",
@@ -83,7 +91,11 @@ __all__ = [
     "TextChunker",
     "TextDocumentConverter",
     "UnsupportedDocumentError",
+    "WorkerPoolError",
+    "WorkerResult",
     "build_classifier",
+    "build_classifier_worker_pool",
+    "build_stateless_classifier_factory",
     "chunk_document",
     "classifier_from_env",
     "compile_regex_rules",
@@ -92,4 +104,6 @@ __all__ = [
     "ingest_document",
     "load_regex_rule_definitions",
     "parse_regex_glossary",
+    "ClassifierWorkerPool",
+    "StatelessClassifierWorker",
 ]

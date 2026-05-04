@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from threading import local
+from typing import Any, Callable, Iterable, Mapping, Optional
+
+from doc_analyse.classifiers import (
+    BaseClassifier,
+    ClassificationResult,
+    build_classifier,
+    classifier_from_env,
+)
+from doc_analyse.ingestion.models import TextChunk
+from doc_analyse.prompt.loader import load_classifier_agent_prompt
+
+
+class WorkerPoolError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class WorkerResult:
+    chunk: TextChunk
+    classification: ClassificationResult
+
+
+class StatelessClassifierWorker:
+    """Thread-safe stateless worker.
+
+    A worker call never keeps request memory. It only classifies the current
+    chunk and metadata. The classifier instance is cached per-thread to avoid
+    sharing non-thread-safe clients across worker threads.
+    """
+
+    def __init__(self, classifier_factory: Callable[[], BaseClassifier]) -> None:
+        self._classifier_factory = classifier_factory
+        self._thread_local = local()
+
+    def classify_chunk(self, chunk: TextChunk) -> WorkerResult:
+        if not isinstance(chunk.text, str) or not chunk.text.strip():
+            raise WorkerPoolError("Worker chunk text must be a non-empty string.")
+
+        classification = self._classifier().classify(
+            text=chunk.text,
+            metadata=_chunk_classification_metadata(chunk),
+        )
+        return WorkerResult(
+            chunk=chunk,
+            classification=classification,
+        )
+
+    def _classifier(self) -> BaseClassifier:
+        classifier = getattr(self._thread_local, "classifier", None)
+        if classifier is not None:
+            return classifier
+
+        classifier = self._classifier_factory()
+        self._thread_local.classifier = classifier
+        return classifier
+
+
+class ClassifierWorkerPool:
+    def __init__(
+        self,
+        worker: StatelessClassifierWorker,
+        max_workers: Optional[int] = None,
+    ) -> None:
+        self.worker = worker
+        self.max_workers = max_workers
+
+    def classify_chunks(self, chunks: Iterable[TextChunk]) -> tuple[WorkerResult, ...]:
+        indexed_chunks = tuple(enumerate(chunks))
+        if not indexed_chunks:
+            return ()
+
+        resolved_max_workers = self.max_workers or min(32, len(indexed_chunks))
+        results_by_index = {}
+        with ThreadPoolExecutor(max_workers=resolved_max_workers) as executor:
+            futures = {
+                executor.submit(self.worker.classify_chunk, chunk): index
+                for index, chunk in indexed_chunks
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    results_by_index[index] = future.result()
+                except Exception as exc:
+                    raise WorkerPoolError(f"Worker failed for chunk index {index}: {exc}") from exc
+
+        return tuple(results_by_index[index] for index, _ in indexed_chunks)
+
+
+def build_stateless_classifier_factory(
+    *,
+    provider: Optional[str] = None,
+    prefix: str = "DOC_ANALYSE_LLM",
+    system_prompt: Optional[str] = None,
+    **classifier_kwargs: Any,
+) -> Callable[[], BaseClassifier]:
+    worker_system_prompt = load_classifier_agent_prompt(system_prompt)
+    base_kwargs = dict(classifier_kwargs)
+    base_kwargs["system_prompt"] = worker_system_prompt
+
+    if provider is not None:
+        normalized_provider = provider.strip().lower()
+        return lambda: build_classifier(normalized_provider, **base_kwargs)
+
+    return lambda: classifier_from_env(prefix=prefix, **base_kwargs)
+
+
+def build_classifier_worker_pool(
+    *,
+    provider: Optional[str] = None,
+    prefix: str = "DOC_ANALYSE_LLM",
+    system_prompt: Optional[str] = None,
+    max_workers: Optional[int] = None,
+    **classifier_kwargs: Any,
+) -> ClassifierWorkerPool:
+    classifier_factory = build_stateless_classifier_factory(
+        provider=provider,
+        prefix=prefix,
+        system_prompt=system_prompt,
+        **classifier_kwargs,
+    )
+    worker = StatelessClassifierWorker(classifier_factory=classifier_factory)
+    return ClassifierWorkerPool(worker=worker, max_workers=max_workers)
+
+
+def _chunk_classification_metadata(chunk: TextChunk) -> Mapping[str, Any]:
+    metadata = dict(chunk.metadata)
+    metadata.setdefault("source", chunk.source)
+    metadata.setdefault("start_char", chunk.start_char)
+    metadata.setdefault("end_char", chunk.end_char)
+    return metadata
