@@ -87,6 +87,12 @@ class YaraDetector(BaseDetector):
                     byte_offset = instance.offset
                     byte_length = instance.matched_length
 
+                    # YARA reports byte offsets in UTF-8 encoded data.
+                    # Convert to character offsets for consistent span tracking.
+                    text_bytes = chunk.text.encode("utf-8")
+                    char_start = len(text_bytes[:byte_offset].decode("utf-8", errors="replace"))
+                    char_end = char_start + len(span_text)
+
                     findings.append(
                         self._build_finding(
                             chunk=chunk,
@@ -95,8 +101,8 @@ class YaraDetector(BaseDetector):
                             severity=str(rule_meta.get("severity", "medium")),
                             reason=str(rule_meta.get("reason", "YARA rule matched.")),
                             rule_id=str(rule_meta.get("rule_id", rule.rule)),
-                            start_char=chunk.start_char + byte_offset,
-                            end_char=chunk.start_char + byte_offset + byte_length,
+                            start_char=chunk.start_char + char_start,
+                            end_char=chunk.start_char + char_end,
                             requires_llm_validation=True,
                         )
                     )
