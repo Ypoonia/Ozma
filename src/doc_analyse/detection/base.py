@@ -42,9 +42,10 @@ class BaseDetector(ABC):
         )
 
     @staticmethod
-    def _finding_key(finding: DetectionFinding) -> tuple[str, int, int]:
+    def _finding_key(finding: DetectionFinding) -> tuple[str, str, int, int]:
         return (
             finding.rule_id,
+            finding.source,
             finding.start_char,
             finding.end_char,
         )

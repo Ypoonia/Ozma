@@ -110,9 +110,11 @@ def test_worker_pool_wraps_worker_errors_with_chunk_index():
         TextChunk(text="   ", source="doc.txt", start_char=5, end_char=8),
     )
 
-    with ClassifierWorkerPool(worker=worker, max_workers=1) as pool:
-        with pytest.raises(WorkerPoolError, match="chunk index 1"):
-            pool.classify_chunks(chunks)
+    with (
+        ClassifierWorkerPool(worker=worker, max_workers=1) as pool,
+        pytest.raises(WorkerPoolError, match="chunk index 1"),
+    ):
+        pool.classify_chunks(chunks)
 
 
 def test_classifier_worker_pool_returns_empty_for_no_chunks():
