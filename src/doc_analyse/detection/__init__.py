@@ -5,32 +5,22 @@ from doc_analyse.detection.prompt_guard import (
     PromptGuardDependencyError,
     PromptGuardDetector,
 )
-from doc_analyse.detection.regex import (
-    DEFAULT_REGEX_GLOSSARY,
-    DEFAULT_REGEX_RULES,
-    RegexDetector,
-    RegexGlossaryError,
-    RegexRule,
-    RegexRuleDefinition,
-    compile_regex_rules,
-    load_regex_rule_definitions,
-    parse_regex_glossary,
+from doc_analyse.detection.yara import (
+    DEFAULT_YARA_RULES_FILE,
+    YaraDetector,
+    YaraGlossaryError,
+    compile_yara_rules,
 )
 
 __all__ = [
     "BaseDetector",
-    "DEFAULT_REGEX_GLOSSARY",
-    "DEFAULT_REGEX_RULES",
     "DEFAULT_PROMPT_GUARD_MODEL",
+    "DEFAULT_YARA_RULES_FILE",
     "DetectionFinding",
     "ParallelDetector",
     "PromptGuardDependencyError",
     "PromptGuardDetector",
-    "RegexDetector",
-    "RegexGlossaryError",
-    "RegexRule",
-    "RegexRuleDefinition",
-    "compile_regex_rules",
-    "load_regex_rule_definitions",
-    "parse_regex_glossary",
+    "YaraDetector",
+    "YaraGlossaryError",
+    "compile_yara_rules",
 ]

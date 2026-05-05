@@ -36,6 +36,9 @@ prompt-guard = [
     "torch",
     "transformers",
 ]
+yara = [
+    "yara-python>=4.5.0",
+]
 dev = [
     "pytest",
     "ruff",
@@ -45,7 +48,7 @@ dev = [
 package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
-doc_analyse = ["detection/*.yaml", "prompt/*.md"]
+doc_analyse = ["detection/*.yaml", "detection/*.yara", "prompt/*.md"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
