@@ -97,6 +97,7 @@ def test_chunk_document_preserves_offsets_and_metadata():
     ]
     assert [chunk.metadata["chunk_index"] for chunk in chunks] == [0, 1, 2, 3]
     assert all(chunk.metadata["extension"] == ".txt" for chunk in chunks)
+    assert all("byte_to_char" in chunk.metadata for chunk in chunks)
 
 
 def test_chunker_rejects_invalid_settings():
