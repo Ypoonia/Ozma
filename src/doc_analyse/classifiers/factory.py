@@ -6,7 +6,6 @@ from typing import Any, Dict, Type
 from doc_analyse.classifiers.anthropic import AnthropicClassifier
 from doc_analyse.classifiers.base import BaseClassifier
 from doc_analyse.classifiers.gemini import GeminiClassifier
-from doc_analyse.classifiers.groq import GroqClassifier
 from doc_analyse.classifiers.openai import OpenAIClassifier
 
 PROVIDERS: Dict[str, Type[BaseClassifier]] = {
@@ -15,7 +14,6 @@ PROVIDERS: Dict[str, Type[BaseClassifier]] = {
     "codex": OpenAIClassifier,
     "gemini": GeminiClassifier,
     "google": GeminiClassifier,
-    "groq": GroqClassifier,
     "openai": OpenAIClassifier,
 }
 
@@ -25,7 +23,6 @@ PROVIDER_API_KEY_ENV = {
     "codex": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "google": "GEMINI_API_KEY",
-    "groq": "GROQ_API_KEY",
     "openai": "OPENAI_API_KEY",
 }
 

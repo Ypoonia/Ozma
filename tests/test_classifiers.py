@@ -12,7 +12,6 @@ from doc_analyse.classifiers import (
     ClassifierPromptError,
     ClassifierResponseError,
     GeminiClassifier,
-    GroqClassifier,
     OpenAIClassifier,
     build_classifier,
     classifier_from_env,
@@ -20,7 +19,6 @@ from doc_analyse.classifiers import (
 from doc_analyse.classifiers.anthropic import _anthropic_response_text
 from doc_analyse.classifiers.config import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 from doc_analyse.classifiers.gemini import _gemini_response_text
-from doc_analyse.classifiers.groq import _groq_response_text
 from doc_analyse.classifiers.openai import _openai_chat_response_text, _openai_response_text
 
 
@@ -175,7 +173,6 @@ class ClassifierTests(unittest.TestCase):
             (AnthropicClassifier, "ANTHROPIC_API_KEY"),
             (OpenAIClassifier, "OPENAI_API_KEY"),
             (GeminiClassifier, "GEMINI_API_KEY"),
-            (GroqClassifier, "GROQ_API_KEY"),
         )
 
         with patch.dict(os.environ, {}, clear=True):
@@ -193,7 +190,6 @@ class ClassifierTests(unittest.TestCase):
             AnthropicClassifier,
             OpenAIClassifier,
             GeminiClassifier,
-            GroqClassifier,
         ):
             with self.subTest(classifier_type=classifier_type.__name__):
                 client = object()
@@ -207,7 +203,6 @@ class ClassifierTests(unittest.TestCase):
             ("OpenAI", _openai_response_text, SimpleNamespace(output=[])),
             ("OpenAI", _openai_chat_response_text, _chat_response("")),
             ("Gemini", _gemini_response_text, SimpleNamespace(text="")),
-            ("Groq", _groq_response_text, _chat_response(None)),
         )
 
         for provider_name, extractor, response in cases:

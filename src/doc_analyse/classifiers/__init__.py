@@ -10,7 +10,6 @@ from doc_analyse.classifiers.base import (
 )
 from doc_analyse.classifiers.factory import build_classifier, classifier_from_env
 from doc_analyse.classifiers.gemini import GeminiClassifier
-from doc_analyse.classifiers.groq import GroqClassifier
 from doc_analyse.classifiers.openai import OpenAIClassifier
 
 __all__ = [
@@ -22,7 +21,6 @@ __all__ = [
     "ClassifierPromptError",
     "ClassifierResponseError",
     "GeminiClassifier",
-    "GroqClassifier",
     "OpenAIClassifier",
     "PromptInjectionFinding",
     "build_classifier",
