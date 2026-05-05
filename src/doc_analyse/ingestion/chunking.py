@@ -5,7 +5,7 @@ from typing import Any, Mapping
 
 from doc_analyse.ingestion.models import ExtractedDocument, TextChunk
 
-DEFAULT_CHUNK_SIZE = 2000
+DEFAULT_CHUNK_SIZE = 1500  # Must fit PromptGuard's 512-token window (~3 chars/token)
 DEFAULT_CHUNK_OVERLAP = 200
 
 
