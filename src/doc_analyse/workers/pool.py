@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from threading import local
+from time import sleep
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 from doc_analyse.classifiers import (
@@ -23,6 +24,10 @@ class WorkerPoolError(RuntimeError):
 class WorkerResult:
     chunk: TextChunk
     classification: ClassificationResult
+
+
+RETRY_DELAYS = (1, 2, 4)  # exponential backoff in seconds
+CHUNK_TIMEOUT = 120  # seconds per chunk
 
 
 class StatelessClassifierWorker:
@@ -60,6 +65,24 @@ class StatelessClassifierWorker:
         return classifier
 
 
+def _classify_with_retry(worker: StatelessClassifierWorker, chunk: TextChunk) -> WorkerResult:
+    """Call classify_chunk with exponential backoff retry on failure."""
+    last_exc: Exception | None = None
+    for delay in RETRY_DELAYS:
+        try:
+            return worker.classify_chunk(chunk)
+        except Exception as exc:
+            last_exc = exc
+            sleep(delay)
+    # Final attempt — let it propagate
+    raise last_exc from None
+
+
+def _cancel_pending(futures: dict, futures_to_cancel: set) -> None:
+        for future in futures_to_cancel:
+            future.cancel()
+
+
 class ClassifierWorkerPool:
     """Thread pool that fans out chunk classification across stateless workers.
 
@@ -94,15 +117,32 @@ class ClassifierWorkerPool:
 
         results_by_index: dict[int, WorkerResult] = {}
         futures = {
-            self._executor.submit(self.worker.classify_chunk, chunk): index
+            self._executor.submit(_classify_with_retry, self.worker, chunk): index
             for index, chunk in indexed_chunks
         }
-        for future in as_completed(futures):
-            index = futures[future]
-            try:
-                results_by_index[index] = future.result()
-            except Exception as exc:
-                raise WorkerPoolError(f"Worker failed for chunk index {index}: {exc}") from exc
+        pending = set(futures.keys())
+
+        try:
+            for future in as_completed(futures):
+                pending.discard(future)
+                index = futures[future]
+                try:
+                    results_by_index[index] = future.result(timeout=CHUNK_TIMEOUT)
+                except TimeoutError as exc:
+                    raise WorkerPoolError(
+                        f"Worker timed out after {CHUNK_TIMEOUT}s for chunk index {index}."
+                    ) from exc
+                except Exception as exc:
+                    raise WorkerPoolError(
+                        f"Worker failed for chunk index {index} after {len(RETRY_DELAYS)} retries: {exc}"
+                    ) from exc
+        finally:
+            _cancel_pending(futures, pending)
+
+        if len(results_by_index) != len(indexed_chunks):
+            raise WorkerPoolError(
+                f"Expected {len(indexed_chunks)} results but got {len(results_by_index)}."
+            )
 
         return tuple(results_by_index[index] for index, _ in indexed_chunks)
 
