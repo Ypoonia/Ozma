@@ -30,7 +30,6 @@ conversion = [
 llm = [
     "anthropic",
     "google-genai",
-    "groq",
     "openai",
 ]
 prompt-guard = [

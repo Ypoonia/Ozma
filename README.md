@@ -47,7 +47,6 @@ Supported provider values:
 - `codex`
 - `anthropic` or `claude`
 - `gemini` or `google`
-- `groq`
 
 ## Ingestion
 
