@@ -70,27 +70,27 @@ python -m pip install -e ".[conversion]"
 
 ## Cheap Detection
 
-Run local regex detection before sending evidence to any LLM provider:
+Run local YARA detection before sending evidence to any LLM provider:
 
 ```python
-from doc_analyse import RegexDetector, chunk_document, convert_document
+from doc_analyse import YaraDetector, chunk_document, convert_document
 
 document = convert_document("policy.txt")
 chunks = chunk_document(document)
-findings = RegexDetector().detect_many(chunks)
+findings = YaraDetector().detect_many(chunks)
 ```
 
-Run regex and Prompt Guard in parallel when the optional ML dependencies are installed:
+Run YARA and Prompt Guard in parallel when the optional ML dependencies are installed:
 
 ```bash
 python -m pip install -e ".[prompt-guard]"
 ```
 
 ```python
-from doc_analyse import ParallelDetector, PromptGuardDetector, RegexDetector
+from doc_analyse import ParallelDetector, PromptGuardDetector, YaraDetector
 
 detector = ParallelDetector([
-    RegexDetector(),
+    YaraDetector(),
     PromptGuardDetector(),
 ])
 
