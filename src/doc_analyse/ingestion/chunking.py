@@ -46,7 +46,7 @@ class TextChunker:
                         source=document.source,
                         start_char=start,
                         end_char=end,
-                        metadata=_chunk_metadata(document.metadata, len(chunks)),
+                        metadata=_chunk_metadata(document.metadata, len(chunks), chunk_text),
                     )
                 )
 
@@ -86,7 +86,24 @@ def _move_start_to_boundary(text: str, start: int) -> int:
     return start
 
 
-def _chunk_metadata(document_metadata: Mapping[str, Any], index: int) -> dict[str, Any]:
+def _chunk_metadata(document_metadata: Mapping[str, Any], index: int, text: str) -> dict[str, Any]:
     metadata = dict(document_metadata)
     metadata["chunk_index"] = index
+    metadata["byte_to_char"] = _build_byte_to_char(text)
     return metadata
+
+
+def _build_byte_to_char(text: str) -> list[int]:
+    encoded = text.encode("utf-8")
+    mapping = [0] * (len(encoded) + 1)
+    char_idx = 0
+    byte_idx = 0
+    while byte_idx < len(encoded):
+        b = encoded[byte_idx]
+        seq_len = 1 if b < 0x80 else 2 if b < 0xE0 else 3 if b < 0xF0 else 4
+        for i in range(seq_len):
+            mapping[byte_idx + i] = char_idx
+        byte_idx += seq_len
+        char_idx += 1
+    mapping[len(encoded)] = char_idx
+    return mapping

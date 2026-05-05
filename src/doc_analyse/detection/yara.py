@@ -11,6 +11,7 @@ except ImportError:  # pragma: no cover
 
 from doc_analyse.detection.base import BaseDetector
 from doc_analyse.detection.models import DetectionFinding
+from doc_analyse.ingestion.chunking import _build_byte_to_char
 from doc_analyse.ingestion.models import TextChunk
 
 DEFAULT_YARA_RULES_FILE = "default.yara"
@@ -74,21 +75,11 @@ class YaraDetector(BaseDetector):
             )
 
         encoded = chunk.text.encode("utf-8")
-        results = self._compiled.match(data=encoded)
+        byte_to_char = chunk.metadata.get("byte_to_char")
+        if byte_to_char is None:
+            byte_to_char = _build_byte_to_char(chunk.text)
 
-        # Precompute byte-offset -> char-offset mapping once per call (O(n) time/space)
-        # so every per-match lookup below is O(1) rather than re-decoding the prefix.
-        byte_to_char: list[int] = [0] * (len(encoded) + 1)
-        char_idx = 0
-        byte_idx = 0
-        while byte_idx < len(encoded):
-            b = encoded[byte_idx]
-            seq_len = 1 if b < 0x80 else 2 if b < 0xE0 else 3 if b < 0xF0 else 4
-            for i in range(seq_len):
-                byte_to_char[byte_idx + i] = char_idx
-            byte_idx += seq_len
-            char_idx += 1
-        byte_to_char[len(encoded)] = char_idx
+        results = self._compiled.match(data=encoded)
 
         findings = []
         for rule in results:
@@ -104,7 +95,6 @@ class YaraDetector(BaseDetector):
                     if not span_text.strip():
                         continue
 
-                    # Convert byte offset to character offset for correct Unicode indexing.
                     char_offset = byte_to_char[instance.offset]
                     span_char_len = len(span_text)
 
@@ -128,9 +118,6 @@ class YaraDetector(BaseDetector):
 # ---------------------------------------------------------------------------
 # Module-level compiled rules
 # ---------------------------------------------------------------------------
-
-_DEFAULT_COMPILED_RULES: Optional[Any] = None
-
 
 def _load_default_rules() -> Any:
     if yara is None:
