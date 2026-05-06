@@ -23,6 +23,45 @@ _SEVERITY_WEIGHTS: Mapping[str, float] = {
 }
 
 
+# Category-combination routing rules.
+# Each entry is (required_categories, pg_gate, decision).
+# pg_gate None = decision fires regardless of pg_score.
+# pg_gate 0.10 = fires only when pg_score < 0.10.
+_CATEGORY_COMBINATION_RULES: tuple[tuple[frozenset[str], float | None, str], ...] = (
+    # tool_hijack + instruction_override → always HOLD
+    (frozenset({"tool_hijack", "instruction_override"}), None, DECISION_HOLD),
+    # secret_exfiltration + instruction_override → always HOLD
+    # covers hidden_prompt_exfiltration (category=secret_exfiltration) + instruction_override
+    (frozenset({"secret_exfiltration", "instruction_override"}), None, DECISION_HOLD),
+    # secret_exfiltration + tool_hijack → always HOLD
+    (frozenset({"secret_exfiltration", "tool_hijack"}), None, DECISION_HOLD),
+    # topic_mention ALONE (no other categories) + pg_score < 0.10 → SAFE
+    (frozenset({"topic_mention"}), 0.10, DECISION_SAFE),
+)
+
+
+def _check_category_combination_rules(
+    evidence: Sequence[YaraEvidence],
+    pg_score: float,
+) -> str | None:
+    """Check category-combination rules first. Returns decision or None."""
+    categories = {e.category for e in evidence}
+    for required_categories, pg_gate, decision in _CATEGORY_COMBINATION_RULES:
+        # Exact equality for "alone" rules (topic_mention), subset for combo rules
+        if required_categories.issubset(categories):
+            if len(required_categories) == len(categories):
+                # Exact match: single-category "alone" rules
+                if pg_gate is None:
+                    return decision
+                if pg_gate == 0.10 and pg_score < 0.10:
+                    return decision
+            else:
+                # Superset match: multi-category combo rules
+                if pg_gate is None:
+                    return decision
+    return None
+
+
 @dataclass(frozen=True)
 class YaraEvidence:
     rule_id: str
@@ -31,10 +70,17 @@ class YaraEvidence:
     span: str
     start_char: int
     end_char: int
-    score: float = 1.0
+    weight: float = 0.0  # YARA rule weight (0 if not set)
+    route_hint: str = "evidence"
 
     @classmethod
     def from_finding(cls, f: DetectionFinding) -> YaraEvidence:
+        if isinstance(f, YaraEvidence):
+            return f
+        metadata = f.metadata or {}
+        # Router reads raw YARA weight from metadata["yara_weight"].
+        # yara.py stores normalized score in f.score; raw weight is in metadata.
+        raw_weight = float(metadata.get("yara_weight", 0.0))
         return cls(
             rule_id=f.rule_id,
             category=f.category,
@@ -42,7 +88,8 @@ class YaraEvidence:
             span=f.span,
             start_char=f.start_char,
             end_char=f.end_char,
-            score=f.score if f.score is not None else 1.0,
+            weight=raw_weight,
+            route_hint=str(metadata.get("route_hint", "evidence")),
         )
 
 
@@ -103,11 +150,34 @@ class CheapRouter:
         yara_findings: Sequence[DetectionFinding],
         pg_score: float,
     ) -> CheapChunkDecision:
-        evidence = tuple(YaraEvidence.from_finding(f) for f in yara_findings)
-        yara_score = _compute_yara_score(evidence)
+        # Accept YaraEvidence directly (from tests) or DetectionFinding (from production)
+        evidence: tuple[YaraEvidence, ...] = tuple(
+            f if isinstance(f, YaraEvidence) else YaraEvidence.from_finding(f)
+            for f in yara_findings
+        )
         pg_score = max(0.0, min(1.0, pg_score))
 
-        # Apply weights: zero weight means signal is neutralized
+        # Category-combination rules override numeric scoring
+        combo_decision = _check_category_combination_rules(evidence, pg_score)
+        if combo_decision is not None:
+            yara_score = _compute_yara_score(evidence)
+            risk_score = (yara_score * self.yara_weight) + (pg_score * 100 * self.pg_weight)
+            reason = _build_reason(yara_score, pg_score, evidence, False, False)
+            return CheapChunkDecision(
+                decision=combo_decision,
+                risk_score=risk_score,
+                pg_score=pg_score,
+                yara_score=yara_score,
+                findings=evidence,
+                reason=reason,
+            )
+
+        # Collect advisory route hints — floor for final decision, not authoritative
+        has_hold_hint = any(e.route_hint == "hold" for e in evidence)
+        has_review_hint = any(e.route_hint == "review" for e in evidence)
+
+        yara_score = _compute_yara_score(evidence)
+
         yara_strong = (
             self.yara_weight > 0
             and yara_score >= self.yara_hold_threshold
@@ -130,19 +200,16 @@ class CheapRouter:
         if yara_strong or pg_strong:
             decision = DECISION_HOLD
             reason = _build_reason(yara_score, pg_score, evidence, yara_strong, pg_strong)
-        elif yara_moderate or pg_moderate or risk_score >= 20.0:
+        elif yara_moderate or pg_moderate or risk_score >= 20.0 or has_hold_hint or has_review_hint:
             decision = DECISION_REVIEW
             reason = _build_reason(yara_score, pg_score, evidence, yara_moderate, pg_moderate)
         elif risk_score >= 10.0:
-            # Medium YARA hit (score 10) with yara_weight 0.5: 5.0 risk — still below 20.
-            # Gate REVIEW for detections that barely missed strong but have some signal.
             decision = DECISION_REVIEW
             reason = _build_reason(yara_score, pg_score, evidence, False, False)
         else:
             decision = DECISION_SAFE
             reason = f"YARA={yara_score:.0f}, PG={pg_score:.2f} — both signals weak."
 
-        # Validate decision is a known value — fall through to review on unknown
         if decision not in _CHUNK_DECISIONS:
             decision = DECISION_REVIEW
             reason = f"Unknown decision '{decision}' — routing to review. {reason}"
@@ -160,8 +227,14 @@ class CheapRouter:
 def _compute_yara_score(evidence: Sequence[YaraEvidence]) -> float:
     if not evidence:
         return 0.0
-    score = sum(_SEVERITY_WEIGHTS.get(e.severity.strip().lower(), 10.0) for e in evidence)
-    return min(100.0, score)
+    # Deduplicate by category: only count the highest-weight finding per category.
+    # This prevents repeated-match inflation when the same rule fires multiple times.
+    best_by_category: dict[str, float] = {}
+    for e in evidence:
+        w = e.weight if e.weight > 0 else _SEVERITY_WEIGHTS.get(e.severity.strip().lower(), 10.0)
+        if w > best_by_category.get(e.category, 0.0):
+            best_by_category[e.category] = w
+    return min(100.0, sum(best_by_category.values()))
 
 
 def _build_reason(
