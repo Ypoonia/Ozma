@@ -188,11 +188,12 @@ class ClassifierWorkerPool:
                     # Check whether any still-pending futures have exceeded their deadline.
                     for f, (idx, dl) in list(futures_with_deadline.items()):
                         if now > dl:
+                            elapsed = now - (dl - CHUNK_TIMEOUT)
                             for pending_f in futures_with_deadline:
                                 pending_f.cancel()
                             raise WorkerPoolError(
                                 f"Worker timed out after {CHUNK_TIMEOUT:.1f}s "
-                                f"for chunk index {idx}."
+                                f"(elapsed={elapsed:.3f}s) for chunk index {idx}."
                             )
 
         finally:
