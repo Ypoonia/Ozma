@@ -173,3 +173,43 @@ def test_build_stateless_classifier_factory_can_use_env_builder(monkeypatch):
     assert isinstance(classifier, FakeWorkerClassifier)
     assert captured["prefix"] == "CUSTOM_PREFIX"
     assert "system_prompt" in captured["kwargs"]
+
+
+def test_worker_pool_is_reusable_across_classify_chunks_calls():
+    """classify_chunks can be called more than once on the same pool instance."""
+    worker = StatelessClassifierWorker(classifier_factory=lambda: FakeWorkerClassifier())
+    chunk = TextChunk(text="hello", source="doc.txt", start_char=0, end_char=5)
+
+    with ClassifierWorkerPool(worker=worker) as pool:
+        first = pool.classify_chunks((chunk,))
+        second = pool.classify_chunks((chunk,))
+
+    assert len(first) == 1
+    assert len(second) == 1
+    assert first[0].chunk.text == second[0].chunk.text == "hello"
+
+
+def test_worker_pool_times_out_hung_futures(monkeypatch):
+    """A task that never returns raises WorkerPoolError after CHUNK_TIMEOUT."""
+    # Patch CHUNK_TIMEOUT to a very short value so the test is fast.
+    monkeypatch.setattr("doc_analyse.workers.pool.CHUNK_TIMEOUT", 0.3)
+
+    hang_event = threading.Event()
+
+    class HangingClassifier:
+        def classify(self, text, metadata=None):
+            hang_event.wait()  # blocks until the test releases it
+            return ClassificationResult(verdict="safe", confidence=1.0, reasons=())
+
+    worker = StatelessClassifierWorker(classifier_factory=lambda: HangingClassifier())
+    chunk = TextChunk(text="stuck", source="doc.txt", start_char=0, end_char=5)
+
+    pool = ClassifierWorkerPool(worker=worker, max_workers=1)
+    try:
+        with pytest.raises(WorkerPoolError, match="timed out"):
+            pool.classify_chunks((chunk,))
+    finally:
+        # Release the background thread *before* pool.close() waits for it,
+        # otherwise close() would block until hang_event is set.
+        hang_event.set()
+        pool.close()

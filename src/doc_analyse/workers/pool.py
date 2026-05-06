@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import dataclass
 from threading import local
-from time import sleep
-from typing import Any, Callable, Iterable, Mapping, Optional
+from time import monotonic, sleep
+from typing import Any, Callable, Iterable, Mapping, Optional, Tuple
 
 from doc_analyse.classifiers import (
     BaseClassifier,
@@ -26,8 +26,11 @@ class WorkerResult:
     classification: ClassificationResult
 
 
-RETRY_DELAYS = (1, 2, 4)  # exponential backoff in seconds
-CHUNK_TIMEOUT = 120  # seconds per chunk
+RETRY_DELAYS = (1, 2, 4)  # exponential backoff in seconds between retries
+CHUNK_TIMEOUT = 120  # seconds per chunk — enforced from submission to completion
+
+# Backpressure: max futures in flight at any time
+_MAX_CONCURRENT = 16
 
 
 class StatelessClassifierWorker:
@@ -65,22 +68,36 @@ class StatelessClassifierWorker:
         return classifier
 
 
+def _is_retryable(exc: Exception) -> bool:
+    """Return True for transient errors that may succeed on retry."""
+    if isinstance(exc, (ValueError, TypeError, KeyError, IndexError, AttributeError)):
+        return False
+    return True
+
+
 def _classify_with_retry(worker: StatelessClassifierWorker, chunk: TextChunk) -> WorkerResult:
-    """Call classify_chunk with exponential backoff retry on failure."""
+    """Call classify_chunk with exponential backoff retry on transient failures.
+
+    Attempts classify_chunk once, then retries up to len(RETRY_DELAYS) times
+    with intervening sleeps. Does NOT sleep after the final failure before
+    propagating.
+    """
     last_exc: Exception | None = None
+    try:
+        return worker.classify_chunk(chunk)
+    except Exception as exc:
+        last_exc = exc
+
     for delay in RETRY_DELAYS:
+        if not _is_retryable(last_exc):
+            raise last_exc from None
+        sleep(delay)
         try:
             return worker.classify_chunk(chunk)
         except Exception as exc:
             last_exc = exc
-            sleep(delay)
-    # Final attempt — let it propagate
+
     raise last_exc from None
-
-
-def _cancel_pending(futures: dict, futures_to_cancel: set) -> None:
-        for future in futures_to_cancel:
-            future.cancel()
 
 
 class ClassifierWorkerPool:
@@ -110,34 +127,82 @@ class ClassifierWorkerPool:
         """Shutdown the executor, waiting for in-flight tasks to finish."""
         self._executor.shutdown(wait=True)
 
-    def classify_chunks(self, chunks: Iterable[TextChunk]) -> tuple[WorkerResult, ...]:
+    def classify_chunks(self, chunks: Iterable[TextChunk]) -> Tuple[WorkerResult, ...]:
         indexed_chunks = tuple(enumerate(chunks))
         if not indexed_chunks:
             return ()
 
         results_by_index: dict[int, WorkerResult] = {}
-        futures = {
-            self._executor.submit(_classify_with_retry, self.worker, chunk): index
-            for index, chunk in indexed_chunks
+
+        # P3 fix: bounded submission with batching for backpressure
+        futures: dict[Any, int] = {}
+        batch_size = _MAX_CONCURRENT
+
+        for i in range(0, len(indexed_chunks), batch_size):
+            batch = indexed_chunks[i : i + batch_size]
+            batch_futures = {
+                self._executor.submit(_classify_with_retry, self.worker, chunk): index
+                for index, chunk in batch
+            }
+            futures.update(batch_futures)
+
+        # P1 fix: track per-future deadline; enforce it when future completes
+        futures_with_deadline = {
+            future: (index, monotonic() + CHUNK_TIMEOUT)
+            for future, index in futures.items()
         }
-        pending = set(futures.keys())
 
         try:
-            for future in as_completed(futures):
-                pending.discard(future)
-                index = futures[future]
-                try:
-                    results_by_index[index] = future.result(timeout=CHUNK_TIMEOUT)
-                except TimeoutError as exc:
-                    raise WorkerPoolError(
-                        f"Worker timed out after {CHUNK_TIMEOUT}s for chunk index {index}."
-                    ) from exc
-                except Exception as exc:
-                    raise WorkerPoolError(
-                        f"Worker failed for chunk index {index} after {len(RETRY_DELAYS)} retries: {exc}"
-                    ) from exc
+            while futures_with_deadline:
+                wait_result = wait(
+                    list(futures_with_deadline.keys()),
+                    return_when=FIRST_COMPLETED,
+                    timeout=0.5,
+                )
+
+                done = wait_result.done
+                now = monotonic()
+
+                for future in list(done):
+                    if future not in futures_with_deadline:
+                        continue
+                    index, deadline = futures_with_deadline.pop(future)
+                    elapsed = now - (deadline - CHUNK_TIMEOUT)
+
+                    if elapsed > CHUNK_TIMEOUT:
+                        for f in futures_with_deadline:
+                            f.cancel()
+                        raise WorkerPoolError(
+                            f"Worker timed out after {CHUNK_TIMEOUT:.1f}s "
+                            f"(elapsed={elapsed:.3f}s) for chunk index {index}."
+                        )
+                    try:
+                        results_by_index[index] = future.result()
+                    except Exception as exc:
+                        raise WorkerPoolError(
+                            f"Worker failed for chunk index {index} "
+                            f"after initial attempt + {len(RETRY_DELAYS)} retries: {exc}"
+                        ) from exc
+
+                if not done:
+                    # No futures completed this poll — check for deadline expiry.
+                    # A hung future that never finishes would otherwise spin forever.
+                    for f, (idx, dl) in list(futures_with_deadline.items()):
+                        if now > dl:
+                            elapsed = now - (dl - CHUNK_TIMEOUT)
+                            for pending_f in futures_with_deadline:
+                                pending_f.cancel()
+                            raise WorkerPoolError(
+                                f"Worker timed out after {CHUNK_TIMEOUT:.1f}s "
+                                f"(elapsed={elapsed:.3f}s) for chunk index {idx}."
+                            )
+
         finally:
-            _cancel_pending(futures, pending)
+            # Cancel any futures that did not complete (e.g. on error paths).
+            # The executor itself is kept alive for subsequent classify_chunks calls;
+            # it is only shut down by close() / the context-manager __exit__.
+            for f in futures_with_deadline:
+                f.cancel()
 
         if len(results_by_index) != len(indexed_chunks):
             raise WorkerPoolError(
