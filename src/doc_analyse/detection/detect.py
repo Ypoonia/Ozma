@@ -1,110 +1,159 @@
-"""Per-chunk signal fusion: YARA evidence + Prompt Guard score + CheapRouter."""
+"""Data structures for Layer 1 cheap detection routing."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Iterable, Optional
+from dataclasses import dataclass, field
+from typing import Mapping, Sequence
 
-from doc_analyse.detection.base import BaseDetector
-from doc_analyse.detection.cheap import CheapChunkDecision, CheapRouter
 from doc_analyse.detection.models import DetectionFinding
-from doc_analyse.detection.normalize import normalize_for_detection
-from doc_analyse.detection.prompt_guard import PromptGuardDetector, _normalise_scores
-from doc_analyse.detection.yara import YaraDetector
-from doc_analyse.ingestion.chunking import _build_byte_to_char
-from doc_analyse.ingestion.models import TextChunk
+
+
+# Routing decisions
+DECISION_SAFE = "safe"
+DECISION_REVIEW = "review"
+DECISION_HOLD = "hold"
+
+# Severity weights for YARA score
+_SEVERITY_WEIGHTS: Mapping[str, float] = {
+    "critical": 40.0,
+    "high": 25.0,
+    "medium": 10.0,
+    "low": 5.0,
+}
+
+
+@dataclass(frozen=True)
+class YaraEvidence:
+    rule_id: str
+    category: str
+    severity: str
+    span: str
+    start_char: int
+    end_char: int
+
+    @classmethod
+    def from_finding(cls, f: DetectionFinding) -> YaraEvidence:
+        return cls(
+            rule_id=f.rule_id,
+            category=f.category,
+            severity=f.severity,
+            span=f.span,
+            start_char=f.start_char,
+            end_char=f.end_char,
+        )
+
+
+@dataclass(frozen=True)
+class CheapChunkDecision:
+    decision: str  # "safe" | "review" | "hold"
+    risk_score: float  # 0-100
+    pg_score: float  # 0.0-1.0
+    yara_score: float  # 0-100
+    findings: Sequence[YaraEvidence] = field(default=())
+    reason: str = ""
+
+    def requires_layer2(self) -> bool:
+        return self.decision in {DECISION_REVIEW, DECISION_HOLD}
 
 
 @dataclass(frozen=True)
 class CheapResult:
-    """Result of a single chunk through Layer 1 cheap detection."""
-
-    chunk: TextChunk
+    chunk_index: int
+    chunk_text: str
     decision: CheapChunkDecision
 
-    @property
-    def yara_findings(self) -> tuple[DetectionFinding, ...]:
-        return tuple(
-            DetectionFinding(
-                span=e.span,
-                category=e.category,
-                severity=e.severity,
-                reason="",
-                start_char=e.start_char,
-                end_char=e.end_char,
-                source=self.chunk.source,
-                rule_id=e.rule_id,
-                requires_llm_validation=False,
-            )
-            for e in self.decision.findings
-        )
+
+# Default thresholds
+_YARA_REVIEW_THRESHOLD = 15.0
+_YARA_HOLD_THRESHOLD = 40.0
+_PG_REVIEW_THRESHOLD = 0.40
+_PG_HOLD_THRESHOLD = 0.75
+_YARA_WEIGHT = 0.50
+_PG_WEIGHT = 0.50
 
 
-class CheapDetector:
-    """Fuses YARA evidence + Prompt Guard score through CheapRouter.
-
-    This is the new Layer 1 design. It replaces ParallelDetector as the
-    primary cheap detection entry point.
-
-    Usage:
-        detector = CheapDetector()
-        for result in detector.detect_chunks(chunks):
-            if result.decision.requires_layer2():
-                send_to_layer2(result.chunk)
-    """
-
+class CheapRouter:
     def __init__(
         self,
-        yara_detector: Optional[YaraDetector] = None,
-        prompt_guard: Optional[PromptGuardDetector] = None,
-        router: Optional[CheapRouter] = None,
-        normalize: bool = True,
+        yara_review_threshold: float = _YARA_REVIEW_THRESHOLD,
+        yara_hold_threshold: float = _YARA_HOLD_THRESHOLD,
+        pg_review_threshold: float = _PG_REVIEW_THRESHOLD,
+        pg_hold_threshold: float = _PG_HOLD_THRESHOLD,
+        yara_weight: float = _YARA_WEIGHT,
+        pg_weight: float = _PG_WEIGHT,
     ) -> None:
-        self._yara = yara_detector or YaraDetector()
-        self._pg = prompt_guard
-        self._router = router or CheapRouter()
-        self._normalize = normalize
+        if not 0 <= yara_weight <= 1 or not 0 <= pg_weight <= 1:
+            raise ValueError("Weights must be between 0 and 1")
+        if yara_weight == 0 and pg_weight == 0:
+            raise ValueError("At least one of yara_weight or pg_weight must be non-zero")
+        if not 0 <= yara_review_threshold <= yara_hold_threshold:
+            raise ValueError("yara_review_threshold must be <= yara_hold_threshold")
+        if not 0 <= pg_review_threshold <= pg_hold_threshold:
+            raise ValueError("pg_review_threshold must be <= pg_hold_threshold")
 
-    def detect(self, chunk: TextChunk) -> CheapResult:
-        """Run Layer 1 on a single chunk, return CheapResult with routing decision."""
-        if self._normalize:
-            normalized_text = normalize_for_detection(chunk.text)
+        self.yara_review_threshold = yara_review_threshold
+        self.yara_hold_threshold = yara_hold_threshold
+        self.pg_review_threshold = pg_review_threshold
+        self.pg_hold_threshold = pg_hold_threshold
+        self.yara_weight = yara_weight
+        self.pg_weight = pg_weight
+
+    def route(
+        self,
+        yara_findings: Sequence[DetectionFinding],
+        pg_score: float,
+    ) -> CheapChunkDecision:
+        evidence = tuple(YaraEvidence.from_finding(f) for f in yara_findings)
+        yara_score = _compute_yara_score(evidence)
+        pg_score = max(0.0, min(1.0, pg_score))
+
+        yara_strong = yara_score >= self.yara_hold_threshold
+        yara_moderate = yara_score >= self.yara_review_threshold
+        pg_strong = pg_score >= self.pg_hold_threshold
+        pg_moderate = pg_score >= self.pg_review_threshold
+
+        risk_score = (yara_score * self.yara_weight) + (pg_score * 100 * self.pg_weight)
+
+        if yara_strong or pg_strong:
+            decision = DECISION_HOLD
+            reason = _build_reason(yara_score, pg_score, evidence, yara_strong, pg_strong)
+        elif yara_moderate or pg_moderate or risk_score >= 20.0:
+            decision = DECISION_REVIEW
+            reason = _build_reason(yara_score, pg_score, evidence, yara_moderate, pg_moderate)
         else:
-            normalized_text = chunk.text
+            decision = DECISION_SAFE
+            reason = f"YARA={yara_score:.0f}, PG={pg_score:.2f} — both signals weak."
 
-        # YARA evidence from normalized text — rebuild byte_to_char from
-        # normalized text so offsets are consistent with what PG sees.
-        normalized_chunk = TextChunk(
-            text=normalized_text,
-            source=chunk.source,
-            start_char=chunk.start_char,
-            end_char=chunk.start_char + len(normalized_text),
-            metadata={"byte_to_char": _build_byte_to_char(normalized_text)},
+        return CheapChunkDecision(
+            decision=decision,
+            risk_score=risk_score,
+            pg_score=pg_score,
+            yara_score=yara_score,
+            findings=evidence,
+            reason=reason,
         )
-        yara_findings = self._yara.detect(normalized_chunk)
 
-        # Prompt Guard score from normalized text
-        pg_score = self._pg_score(normalized_text)
 
-        # Router decision
-        decision = self._router.route(yara_findings, pg_score)
+def _compute_yara_score(evidence: Sequence[YaraEvidence]) -> float:
+    if not evidence:
+        return 0.0
+    score = sum(_SEVERITY_WEIGHTS.get(e.severity, 10.0) for e in evidence)
+    return min(100.0, score)
 
-        return CheapResult(chunk=chunk, decision=decision)
 
-    def detect_many(self, chunks: Iterable[TextChunk]) -> tuple[CheapResult, ...]:
-        """Run Layer 1 on multiple chunks."""
-        return tuple(self.detect(chunk) for chunk in chunks)
-
-    def _pg_score(self, normalized_text: str) -> float:
-        if self._pg is None:
-            return 0.0
-
-        try:
-            # Call the PG pipeline directly to get the raw malicious score,
-            # bypassing PromptGuardDetector.detect() which filters by threshold.
-            # This preserves sub-threshold scores (e.g. 0.40-0.49) for the router.
-            raw_scores = _normalise_scores(self._pg.load()(normalized_text))
-            return raw_scores.get("malicious", 0.0)
-        except Exception:
-            # Prompt Guard failed (missing deps, etc.) — treat as no signal
-            return 0.0
+def _build_reason(
+    yara_score: float,
+    pg_score: float,
+    evidence: Sequence[YaraEvidence],
+    yara_signal: bool,
+    pg_signal: bool,
+) -> str:
+    parts = [f"YARA={yara_score:.0f}, PG={pg_score:.2f}"]
+    if evidence:
+        rule_ids = sorted({e.rule_id for e in evidence})
+        parts.append(f"YARA hits: {', '.join(rule_ids)}")
+    if yara_signal:
+        parts.append("YARA strong")
+    if pg_signal:
+        parts.append("PG strong")
+    return " | ".join(parts)

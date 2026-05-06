@@ -23,16 +23,15 @@ from doc_analyse.detection import (
     YaraGlossaryError,
     compile_yara_rules,
 )
-from doc_analyse.detection.cheap import (
-    CHEAP_DECISIONS,
-    CheapChunkDecision,
-    CheapRouter,
+from doc_analyse.detection.detect import (
     DECISION_HOLD,
     DECISION_REVIEW,
     DECISION_SAFE,
+    CheapChunkDecision,
+    CheapResult,
+    CheapRouter,
     YaraEvidence,
 )
-from doc_analyse.detection.detect import CheapDetector, CheapResult
 from doc_analyse.ingestion import (
     BaseDocumentConverter,
     ConverterDependencyError,
@@ -71,9 +70,7 @@ __all__ = [
     "BaseDocumentConverter",
     "BaseClassifier",
     "BaseDetector",
-    "CHEAP_DECISIONS",
     "CheapChunkDecision",
-    "CheapDetector",
     "CheapResult",
     "CheapRouter",
     "ClassificationResult",
