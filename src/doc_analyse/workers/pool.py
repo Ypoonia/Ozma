@@ -100,11 +100,6 @@ def _classify_with_retry(worker: StatelessClassifierWorker, chunk: TextChunk) ->
     raise last_exc from None
 
 
-def _cancel_pending(futures: dict, futures_to_cancel: set) -> None:
-    for future in futures_to_cancel:
-        future.cancel()
-
-
 class ClassifierWorkerPool:
     """Thread pool that fans out chunk classification across stateless workers.
 
@@ -166,16 +161,17 @@ class ClassifierWorkerPool:
                 )
 
                 done = wait_result.done
+                now = monotonic()
+
                 for future in list(done):
                     if future not in futures_with_deadline:
                         continue
                     index, deadline = futures_with_deadline.pop(future)
-                    elapsed = monotonic() - (deadline - CHUNK_TIMEOUT)
+                    elapsed = now - (deadline - CHUNK_TIMEOUT)
 
                     if elapsed > CHUNK_TIMEOUT:
                         for f in futures_with_deadline:
                             f.cancel()
-                        self._executor.shutdown(wait=False)
                         raise WorkerPoolError(
                             f"Worker timed out after {CHUNK_TIMEOUT:.1f}s "
                             f"(elapsed={elapsed:.3f}s) for chunk index {index}."
@@ -189,11 +185,22 @@ class ClassifierWorkerPool:
                         ) from exc
 
                 if not done:
-                    if not futures_with_deadline:
-                        break
+                    # Check whether any still-pending futures have exceeded their deadline.
+                    for f, (idx, dl) in list(futures_with_deadline.items()):
+                        if now > dl:
+                            for pending_f in futures_with_deadline:
+                                pending_f.cancel()
+                            raise WorkerPoolError(
+                                f"Worker timed out after {CHUNK_TIMEOUT:.1f}s "
+                                f"for chunk index {idx}."
+                            )
 
         finally:
-            self._executor.shutdown(wait=False)
+            # Cancel any futures that did not complete (e.g. on error paths).
+            # The executor itself is kept alive for subsequent classify_chunks calls;
+            # it is only shut down by close() / the context-manager __exit__.
+            for f in futures_with_deadline:
+                f.cancel()
 
         if len(results_by_index) != len(indexed_chunks):
             raise WorkerPoolError(
