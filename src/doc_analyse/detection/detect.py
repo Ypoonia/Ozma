@@ -63,7 +63,7 @@ class YaraEvidence:
     span: str
     start_char: int
     end_char: int
-    score: float = 1.0
+    weight: float = 0.0  # YARA rule weight (0 if not set)
     route_hint: str = "evidence"
 
     @classmethod
@@ -78,7 +78,7 @@ class YaraEvidence:
             span=f.span,
             start_char=f.start_char,
             end_char=f.end_char,
-            score=f.score if f.score is not None else 1.0,
+            weight=f.score if f.score is not None else 0.0,
             route_hint=str(metadata.get("route_hint", "evidence")),
         )
 
@@ -227,8 +227,14 @@ class CheapRouter:
 def _compute_yara_score(evidence: Sequence[YaraEvidence]) -> float:
     if not evidence:
         return 0.0
-    score = sum(_SEVERITY_WEIGHTS.get(e.severity.strip().lower(), 10.0) for e in evidence)
-    return min(100.0, score)
+    # Deduplicate by category: only count the highest-weight finding per category.
+    # This prevents repeated-match inflation when the same rule fires multiple times.
+    best_by_category: dict[str, float] = {}
+    for e in evidence:
+        w = e.weight if e.weight > 0 else _SEVERITY_WEIGHTS.get(e.severity.strip().lower(), 10.0)
+        if w > best_by_category.get(e.category, 0.0):
+            best_by_category[e.category] = w
+    return min(100.0, sum(best_by_category.values()))
 
 
 def _build_reason(
