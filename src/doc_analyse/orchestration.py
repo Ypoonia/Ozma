@@ -2,8 +2,8 @@
 
 Primary flow:
 1) ingest and chunk one document
-2) run cheap detectors over all chunks
-3) route flagged chunks to stateless classifier workers
+2) run Layer 1 cheap detection (YARA + Prompt Guard + CheapRouter) on all chunks
+3) route chunks by CheapChunkDecision: SAFE skips Layer 2, REVIEW/HOLD go to Layer 2
 4) aggregate chunk results into a final document verdict
 """
 
@@ -15,7 +15,10 @@ from typing import Iterable, Optional, Union
 
 from doc_analyse.classifiers import ClassificationResult
 from doc_analyse.classifiers.base import VALID_VERDICTS
-from doc_analyse.detection import BaseDetector, DetectionFinding
+from doc_analyse.detection.base import BaseDetector
+from doc_analyse.detection.cheap import CheapChunkDecision
+from doc_analyse.detection.detect import CheapDetector, Layer2Classifier
+from doc_analyse.detection.models import DetectionFinding
 from doc_analyse.ingestion import ConverterRegistry, IngestedDocument, TextChunker, ingest_document
 from doc_analyse.ingestion.models import TextChunk
 from doc_analyse.workers import ClassifierWorkerPool
@@ -36,6 +39,7 @@ class ChunkAnalysisResult:
     chunk_index: int
     chunk: TextChunk
     cheap_findings: tuple[DetectionFinding, ...]
+    cheap_decision: CheapChunkDecision
     routed_to_llm: bool
     llm_classification: Optional[ClassificationResult]
     final_verdict: str
@@ -59,9 +63,10 @@ class DocumentAnalysisResult:
 
 @dataclass
 class DocumentOrchestrator:
-    detector: BaseDetector
+    """Orchestrates cheap Layer 1 + LLM Layer 2 analysis of a document."""
+
+    detector: CheapDetector
     worker_pool: ClassifierWorkerPool
-    route_all_flagged_chunks: bool = True
     _closed: bool = False
 
     def __enter__(self) -> DocumentOrchestrator:
@@ -73,7 +78,6 @@ class DocumentOrchestrator:
     def close(self) -> None:
         if self._closed:
             return
-
         close_pool = getattr(self.worker_pool, "close", None)
         if callable(close_pool):
             close_pool()
@@ -91,23 +95,26 @@ class DocumentOrchestrator:
 
     def analyze_ingested(self, ingested: IngestedDocument) -> DocumentAnalysisResult:
         chunks = ingested.chunks
-        cheap_findings = self.detector.detect_many(chunks)
-        cheap_by_index, unmapped = _index_findings_by_chunk(chunks, cheap_findings)
+
+        # Layer 1: cheap detection on all chunks
+        cheap_results = self.detector.detect_many(chunks)
         routed_indices = tuple(
             index
-            for index, findings in cheap_by_index.items()
-            if self._should_route_to_llm(findings)
+            for index, cr in enumerate(cheap_results)
+            if cr.decision.requires_layer2()
         )
 
+        # Layer 2: LLM validation on REVIEW/HOLD chunks only
         llm_results = self._validate_routed_chunks(chunks, routed_indices)
+
         chunk_results = tuple(
             self._build_chunk_result(
                 chunk_index=index,
-                chunk=chunk,
-                cheap_findings=cheap_by_index[index],
+                chunk=chunks[index],
+                cheap_decision=cheap_results[index].decision,
                 llm_classification=llm_results.get(index),
             )
-            for index, chunk in enumerate(chunks)
+            for index in range(len(chunks))
         )
 
         verdict, reasons = _aggregate_document_verdict(chunk_results)
@@ -116,7 +123,6 @@ class DocumentOrchestrator:
             chunk_results=chunk_results,
             verdict=verdict,
             reasons=reasons,
-            unmapped_cheap_findings=unmapped,
         )
 
     def _validate_routed_chunks(
@@ -140,12 +146,30 @@ class DocumentOrchestrator:
         *,
         chunk_index: int,
         chunk: TextChunk,
-        cheap_findings: tuple[DetectionFinding, ...],
+        cheap_decision: CheapChunkDecision,
         llm_classification: Optional[ClassificationResult],
     ) -> ChunkAnalysisResult:
+        # Convert YaraEvidence back to DetectionFinding for compatibility
+        findings = tuple(
+            DetectionFinding(
+                span=e.span,
+                category=e.category,
+                severity=e.severity,
+                reason=f"[YARA] {e.rule_id} — {e.category} ({e.severity})",
+                start_char=e.start_char,
+                end_char=e.end_char,
+                source=chunk.source,
+                rule_id=e.rule_id,
+                requires_llm_validation=cheap_decision.decision in {"review", "hold"},
+            )
+            for e in cheap_decision.findings
+        )
+
         if llm_classification is not None:
             final_verdict = _normalize_verdict(llm_classification.verdict)
-        elif cheap_findings:
+        elif cheap_decision.decision == "hold":
+            final_verdict = VERDICT_SUSPICIOUS
+        elif cheap_decision.decision == "review":
             final_verdict = VERDICT_SUSPICIOUS
         else:
             final_verdict = VERDICT_SAFE
@@ -153,67 +177,22 @@ class DocumentOrchestrator:
         return ChunkAnalysisResult(
             chunk_index=chunk_index,
             chunk=chunk,
-            cheap_findings=cheap_findings,
+            cheap_findings=findings,
+            cheap_decision=cheap_decision,
             routed_to_llm=llm_classification is not None,
             llm_classification=llm_classification,
             final_verdict=final_verdict,
         )
-
-    def _should_route_to_llm(self, findings: tuple[DetectionFinding, ...]) -> bool:
-        if not findings:
-            return False
-
-        if self.route_all_flagged_chunks:
-            return True
-
-        return any(finding.requires_llm_validation for finding in findings)
-
-
-def _index_findings_by_chunk(
-    chunks: tuple[TextChunk, ...],
-    findings: tuple[DetectionFinding, ...],
-) -> tuple[dict[int, tuple[DetectionFinding, ...]], tuple[DetectionFinding, ...]]:
-    indexed = {index: [] for index in range(len(chunks))}
-    unmapped = []
-
-    for finding in findings:
-        chunk_index = _resolve_chunk_index(chunks, finding)
-        if chunk_index is None:
-            unmapped.append(finding)
-            continue
-
-        indexed[chunk_index].append(finding)
-
-    return (
-        {index: tuple(values) for index, values in indexed.items()},
-        tuple(unmapped),
-    )
-
-
-def _resolve_chunk_index(chunks: tuple[TextChunk, ...], finding: DetectionFinding) -> Optional[int]:
-    metadata_index = finding.metadata.get("chunk_index")
-    if isinstance(metadata_index, int) and 0 <= metadata_index < len(chunks):
-        chunk = chunks[metadata_index]
-        if chunk.source == finding.source:
-            return metadata_index
-
-    for index, chunk in enumerate(chunks):
-        if chunk.source != finding.source:
-            continue
-        if finding.start_char >= chunk.start_char and finding.end_char <= chunk.end_char:
-            return index
-
-    return None
 
 
 def _aggregate_document_verdict(
     chunk_results: tuple[ChunkAnalysisResult, ...],
 ) -> tuple[str, tuple[str, ...]]:
     unsafe_indices = tuple(
-        result.chunk_index for result in chunk_results if result.final_verdict == VERDICT_UNSAFE
+        r.chunk_index for r in chunk_results if r.final_verdict == VERDICT_UNSAFE
     )
     suspicious_indices = tuple(
-        result.chunk_index for result in chunk_results if result.final_verdict == VERDICT_SUSPICIOUS
+        r.chunk_index for r in chunk_results if r.final_verdict == VERDICT_SUSPICIOUS
     )
 
     if unsafe_indices:
@@ -226,17 +205,15 @@ def _aggregate_document_verdict(
 def analyze_document_path(
     path: Union[str, Path],
     *,
-    detector: BaseDetector,
+    detector: CheapDetector,
     worker_pool: ClassifierWorkerPool,
     registry: Optional[ConverterRegistry] = None,
     chunker: Optional[TextChunker] = None,
-    route_all_flagged_chunks: bool = True,
     close_worker_pool: bool = False,
 ) -> DocumentAnalysisResult:
     orchestrator = DocumentOrchestrator(
         detector=detector,
         worker_pool=worker_pool,
-        route_all_flagged_chunks=route_all_flagged_chunks,
     )
     if close_worker_pool:
         with orchestrator:

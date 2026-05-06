@@ -2,54 +2,131 @@ from pathlib import Path
 
 from doc_analyse.classifiers import ClassificationResult
 from doc_analyse.detection import BaseDetector
+from doc_analyse.detection.cheap import (
+    CHEAP_DECISIONS,
+    CheapChunkDecision,
+    CheapRouter,
+    DECISION_HOLD,
+    DECISION_REVIEW,
+    DECISION_SAFE,
+    YaraEvidence,
+)
+from doc_analyse.detection.detect import CheapDetector, CheapResult
 from doc_analyse.ingestion import TextChunker
+from doc_analyse.ingestion.models import TextChunk
 from doc_analyse.orchestration import DocumentOrchestrator, analyze_document_path
 from doc_analyse.workers import WorkerResult
 
 
-class RiskMarkerDetector(BaseDetector):
-    def detect(self, chunk):
-        if "RISKY-INSTRUCTION" not in chunk.text:
-            return ()
+class FakeLayer1Detector(CheapDetector):
+    """Fake CheapDetector for testing — routes based on whether text contains RISKY-INSTRUCTION."""
 
-        return (
-            self._build_finding(
-                chunk=chunk,
-                span="RISKY-INSTRUCTION",
-                category="instruction_override",
-                severity="high",
-                reason="Risk marker for test.",
-                rule_id="risk_marker",
-                start_char=chunk.start_char + chunk.text.index("RISKY-INSTRUCTION"),
-                end_char=chunk.start_char + chunk.text.index("RISKY-INSTRUCTION") + 17,
-                requires_llm_validation=True,
-            ),
-        )
+    def __init__(self, hold_on_risk: bool = True) -> None:
+        super().__init__()
+        self.hold_on_risk = hold_on_risk
+
+    def detect(self, chunk: TextChunk) -> CheapResult:
+        if "RISKY-INSTRUCTION" in chunk.text:
+            decision = DECISION_HOLD if self.hold_on_risk else DECISION_REVIEW
+            idx = chunk.text.index("RISKY-INSTRUCTION")
+            evidence = (
+                YaraEvidence(
+                    rule_id="risk_marker",
+                    category="instruction_override",
+                    severity="high",
+                    span="RISKY-INSTRUCTION",
+                    start_char=chunk.start_char + idx,
+                    end_char=chunk.start_char + idx + 17,
+                ),
+            )
+            cheap_decision = CheapChunkDecision(
+                decision=decision,
+                risk_score=50.0,
+                pg_score=0.0,
+                yara_score=40.0,
+                findings=evidence,
+                reason="RISKY-INSTRUCTION found.",
+            )
+        else:
+            cheap_decision = CheapChunkDecision(
+                decision=DECISION_SAFE,
+                risk_score=0.0,
+                pg_score=0.0,
+                yara_score=0.0,
+                findings=(),
+                reason="No risk signals.",
+            )
+
+        return CheapResult(chunk=chunk, decision=cheap_decision)
 
 
-class NoisyDetector(BaseDetector):
-    def detect(self, chunk):
-        if "FLAGGED-BUT-NO-LLM" not in chunk.text:
-            return ()
+class FakeLayer1ReviewDetector(CheapDetector):
+    """Fake CheapDetector that returns REVIEW (ambiguous) for RISKY-INSTRUCTION."""
 
-        return (
-            self._build_finding(
-                chunk=chunk,
-                span="FLAGGED-BUT-NO-LLM",
-                category="noise",
-                severity="low",
-                reason="Marker that does not require llm.",
-                rule_id="noise_marker",
-                start_char=chunk.start_char + chunk.text.index("FLAGGED-BUT-NO-LLM"),
-                end_char=chunk.start_char + chunk.text.index("FLAGGED-BUT-NO-LLM") + 17,
-                requires_llm_validation=False,
-            ),
-        )
+    def detect(self, chunk: TextChunk) -> CheapResult:
+        if "RISKY-INSTRUCTION" in chunk.text:
+            cheap_decision = CheapChunkDecision(
+                decision=DECISION_REVIEW,
+                risk_score=25.0,
+                pg_score=0.0,
+                yara_score=20.0,
+                findings=(),
+                reason="Ambiguous.",
+            )
+        else:
+            cheap_decision = CheapChunkDecision(
+                decision=DECISION_SAFE,
+                risk_score=0.0,
+                pg_score=0.0,
+                yara_score=0.0,
+                findings=(),
+                reason="No risk signals.",
+            )
+
+        return CheapResult(chunk=chunk, decision=cheap_decision)
+
+
+class FakeLayer1NoFindingsDetector(CheapDetector):
+    """Fake CheapDetector that always returns findings but SAFE decision."""
+
+    def detect(self, chunk: TextChunk) -> CheapResult:
+        if "FLAGGED-BUT-NO-LLM" in chunk.text:
+            idx = chunk.text.index("FLAGGED-BUT-NO-LLM")
+            evidence = (
+                YaraEvidence(
+                    rule_id="noise_marker",
+                    category="noise",
+                    severity="low",
+                    span="FLAGGED-BUT-NO-LLM",
+                    start_char=chunk.start_char + idx,
+                    end_char=chunk.start_char + idx + 17,
+                ),
+            )
+            cheap_decision = CheapChunkDecision(
+                decision=DECISION_SAFE,
+                risk_score=5.0,
+                pg_score=0.0,
+                yara_score=5.0,
+                findings=evidence,
+                reason="Low severity hits only.",
+            )
+        else:
+            cheap_decision = CheapChunkDecision(
+                decision=DECISION_SAFE,
+                risk_score=0.0,
+                pg_score=0.0,
+                yara_score=0.0,
+                findings=(),
+                reason="No risk signals.",
+            )
+
+        return CheapResult(chunk=chunk, decision=cheap_decision)
 
 
 class FakeWorkerPool:
     def __init__(self):
         self.calls = []
+        self.closed = False
 
     def classify_chunks(self, chunks):
         chunk_list = tuple(chunks)
@@ -86,7 +163,7 @@ def test_orchestrator_end_to_end_with_index_traceability(tmp_path: Path):
     chunker = TextChunker(chunk_size=60, chunk_overlap=0)
     pool = FakeWorkerPool()
     orchestrator = DocumentOrchestrator(
-        detector=RiskMarkerDetector(),
+        detector=FakeLayer1Detector(),
         worker_pool=pool,
     )
 
@@ -114,7 +191,7 @@ def test_orchestrator_skips_worker_pool_when_no_cheap_findings(tmp_path: Path):
     path.write_text("No risk markers in this document.", encoding="utf-8")
     pool = FakeWorkerPool()
     orchestrator = DocumentOrchestrator(
-        detector=RiskMarkerDetector(),
+        detector=FakeLayer1Detector(),
         worker_pool=pool,
     )
 
@@ -130,15 +207,14 @@ def test_orchestrator_routes_only_requires_llm_when_configured(tmp_path: Path):
     path.write_text("FLAGGED-BUT-NO-LLM appears here.", encoding="utf-8")
     pool = FakeWorkerPool()
     orchestrator = DocumentOrchestrator(
-        detector=NoisyDetector(),
+        detector=FakeLayer1NoFindingsDetector(),
         worker_pool=pool,
-        route_all_flagged_chunks=False,
     )
 
     result = orchestrator.analyze_path(path)
 
     assert pool.calls == []
-    assert result.verdict == "suspicious"
+    assert result.verdict == "safe"
     assert any(chunk_result.cheap_findings for chunk_result in result.chunk_results)
 
 
@@ -148,7 +224,7 @@ def test_orchestrator_context_manager_closes_worker_pool(tmp_path: Path):
     pool = FakeWorkerPool()
     pool.closed = False
 
-    with DocumentOrchestrator(detector=RiskMarkerDetector(), worker_pool=pool) as orchestrator:
+    with DocumentOrchestrator(detector=FakeLayer1Detector(), worker_pool=pool) as orchestrator:
         result = orchestrator.analyze_path(path)
 
     assert result.verdict == "safe"
@@ -163,7 +239,7 @@ def test_analyze_document_path_can_close_worker_pool(tmp_path: Path):
 
     result = analyze_document_path(
         path,
-        detector=RiskMarkerDetector(),
+        detector=FakeLayer1Detector(),
         worker_pool=pool,
         close_worker_pool=True,
     )
@@ -191,7 +267,7 @@ def test_orchestrator_normalizes_unknown_llm_verdict_to_suspicious(tmp_path: Pat
             )
 
     orchestrator = DocumentOrchestrator(
-        detector=RiskMarkerDetector(),
+        detector=FakeLayer1Detector(),
         worker_pool=UnknownVerdictPool(),
     )
 
