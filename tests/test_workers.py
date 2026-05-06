@@ -153,7 +153,7 @@ def test_build_stateless_classifier_factory_uses_classifier_agent_prompt(monkeyp
     assert captured["provider"] == "openai"
     assert captured["kwargs"]["model"] == "gpt-test"
     assert (
-        "stateless document safety classifier agent" in captured["kwargs"]["system_prompt"].lower()
+        "document safety analyst" in captured["kwargs"]["system_prompt"].lower()
     )
 
 

@@ -13,8 +13,8 @@ from doc_analyse.classifiers import (
     classifier_from_env,
 )
 from doc_analyse.detection import (
-    DEFAULT_YARA_RULES_FILE,
     BaseDetector,
+    DEFAULT_YARA_RULES_FILE,
     DetectionFinding,
     ParallelDetector,
     PromptGuardDependencyError,
@@ -22,6 +22,14 @@ from doc_analyse.detection import (
     YaraDetector,
     YaraGlossaryError,
     compile_yara_rules,
+)
+from doc_analyse.detection.detect import (
+    DECISION_HOLD,
+    DECISION_REVIEW,
+    DECISION_SAFE,
+    CheapChunkDecision,
+    CheapRouter,
+    YaraEvidence,
 )
 from doc_analyse.ingestion import (
     BaseDocumentConverter,
@@ -45,6 +53,7 @@ from doc_analyse.orchestration import (
     DocumentAnalysisResult,
     DocumentOrchestrator,
     analyze_document_path,
+    build_orchestrator,
 )
 from doc_analyse.verifier import DocumentVerifier
 from doc_analyse.workers import (
@@ -61,6 +70,8 @@ __all__ = [
     "BaseDocumentConverter",
     "BaseClassifier",
     "BaseDetector",
+    "CheapChunkDecision",
+    "CheapRouter",
     "ClassificationResult",
     "ChunkAnalysisResult",
     "ClassifierDependencyError",
@@ -69,8 +80,11 @@ __all__ = [
     "ClassifierResponseError",
     "ConverterDependencyError",
     "ConverterRegistry",
-    "DocumentConversionError",
+    "DECISION_HOLD",
+    "DECISION_REVIEW",
+    "DECISION_SAFE",
     "DocumentAnalysisResult",
+    "DocumentConversionError",
     "DocumentOrchestrator",
     "DocumentSegment",
     "DocumentVerifier",
@@ -92,14 +106,16 @@ __all__ = [
     "WorkerPoolError",
     "WorkerResult",
     "YaraDetector",
+    "YaraEvidence",
     "YaraGlossaryError",
-    "compile_yara_rules",
     "build_classifier",
     "build_classifier_worker_pool",
     "build_stateless_classifier_factory",
     "analyze_document_path",
+    "build_orchestrator",
     "chunk_document",
     "classifier_from_env",
+    "compile_yara_rules",
     "convert_document",
     "ingest_document",
     "ClassifierWorkerPool",

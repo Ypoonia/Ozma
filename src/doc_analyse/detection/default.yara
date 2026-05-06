@@ -27,8 +27,9 @@ rule system_override {
   strings:
     $a = /system\s+(override|instruction|prompt)s?/ nocase
     $b = /developer\s+(override|instruction|prompt)s?/ nocase
+    $verb = /(\bignore\b|\bdisregard\b|\boverride\b|\bbypass\b|\breplace\b)/ nocase
   condition:
-    $a or $b
+    ($a or $b) and $verb
 }
 
 rule hidden_prompt_exfiltration {
@@ -42,8 +43,9 @@ rule hidden_prompt_exfiltration {
     $b = /developer\s+prompt/ nocase
     $c = /hidden\s+instructions?/ nocase
     $d = /private\s+tool\s+schemas?/ nocase
+    $exfil = /(\bshow\b|\bdump\b|\bleak\b|\breveal\b|\bexfiltrate\b|\bextract\b|\bprint\b|\btell\b|\bsend\b)/ nocase
   condition:
-    $a or $b or $c or $d
+    ($a or $b or $c or $d) and $exfil
 }
 
 rule credential_exfiltration {
@@ -57,8 +59,9 @@ rule credential_exfiltration {
     $b = /database\s+connection\s+strings?/ nocase
     $c = /environment\s+variables?/ nocase
     $d = /secrets?\.(csv|xlsx)/ nocase
+    $action = /(\bshow\b|\bdump\b|\bleak\b|\breveal\b|\bprint\b|\bextract\b|\bexfiltrate\b|\bsend\b|\bexport\b|\bforward\b)/ nocase
   condition:
-    $a or $b or $c or $d
+    ($a or $b or $c or $d) and $action
 }
 
 rule tool_hijack {
