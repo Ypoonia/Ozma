@@ -54,6 +54,7 @@ from doc_analyse.orchestration import (
     DocumentAnalysisResult,
     DocumentOrchestrator,
     analyze_document_path,
+    build_orchestrator,
 )
 from doc_analyse.verifier import DocumentVerifier
 from doc_analyse.workers import (
@@ -113,6 +114,7 @@ __all__ = [
     "build_classifier_worker_pool",
     "build_stateless_classifier_factory",
     "analyze_document_path",
+    "build_orchestrator",
     "chunk_document",
     "classifier_from_env",
     "compile_yara_rules",

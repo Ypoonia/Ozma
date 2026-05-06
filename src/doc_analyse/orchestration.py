@@ -296,3 +296,32 @@ def analyze_document_path(
         with orchestrator:
             return orchestrator.analyze_path(path, registry=registry, chunker=chunker)
     return orchestrator.analyze_path(path, registry=registry, chunker=chunker)
+
+
+def build_orchestrator(
+    *,
+    yara: Optional[YaraDetector] = None,
+    pg: Optional[PromptGuardDetector] = None,
+    router: Optional[CheapRouter] = None,
+    worker_pool: ClassifierWorkerPool,
+) -> DocumentOrchestrator:
+    """Build a DocumentOrchestrator with sensible defaults.
+
+    Usage:
+        orchestrator = build_orchestrator(worker_pool=my_pool)
+        result = orchestrator.analyze_path("document.pdf")
+
+    Or with full customization:
+        orchestrator = build_orchestrator(
+            yara=YaraDetector(),
+            pg=PromptGuardDetector(),
+            router=CheapRouter(yara_weight=0.7, pg_weight=0.3),
+            worker_pool=my_pool,
+        )
+    """
+    return DocumentOrchestrator(
+        yara=yara or YaraDetector(),
+        pg=pg,
+        router=router or CheapRouter(),
+        worker_pool=worker_pool,
+    )
