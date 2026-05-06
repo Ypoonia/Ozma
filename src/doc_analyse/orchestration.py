@@ -78,6 +78,8 @@ def run_layer1(
 
     for e in decision.findings:
         # e.start_char and e.end_char are in raw (original) coordinates — YARA ran on raw text
+        # e.weight is the raw YARA weight (0-100); normalized score for display
+        normalized_score = min(1.0, e.weight / 100.0) if e.weight > 0 else None
         findings.append(DetectionFinding(
             span=e.span,
             category=e.category,
@@ -88,7 +90,13 @@ def run_layer1(
             source=chunk.source,
             rule_id=e.rule_id,
             requires_llm_validation=requires_llm,
-            score=e.score,
+            score=normalized_score,
+            metadata={
+                "detector": "YaraDetector",
+                "yara_rule": e.rule_id,
+                "yara_weight": e.weight,
+                "route_hint": e.route_hint,
+            },
         ))
 
     # PG-only hold/review: create synthetic finding so evidence is never empty
