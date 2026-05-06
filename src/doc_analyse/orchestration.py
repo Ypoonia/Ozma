@@ -17,7 +17,7 @@ from doc_analyse.classifiers import ClassificationResult
 from doc_analyse.classifiers.base import VALID_VERDICTS
 from doc_analyse.detection.base import BaseDetector
 from doc_analyse.detection.cheap import CheapChunkDecision
-from doc_analyse.detection.detect import CheapDetector, Layer2Classifier
+from doc_analyse.detection.detect import CheapDetector
 from doc_analyse.detection.models import DetectionFinding
 from doc_analyse.ingestion import ConverterRegistry, IngestedDocument, TextChunker, ingest_document
 from doc_analyse.ingestion.models import TextChunk
@@ -167,9 +167,7 @@ class DocumentOrchestrator:
 
         if llm_classification is not None:
             final_verdict = _normalize_verdict(llm_classification.verdict)
-        elif cheap_decision.decision == "hold":
-            final_verdict = VERDICT_SUSPICIOUS
-        elif cheap_decision.decision == "review":
+        elif cheap_decision.decision in {"hold", "review"}:
             final_verdict = VERDICT_SUSPICIOUS
         else:
             final_verdict = VERDICT_SAFE

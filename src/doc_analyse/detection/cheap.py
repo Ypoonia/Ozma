@@ -91,6 +91,8 @@ class CheapRouter:
     ) -> None:
         if not 0 <= yara_weight <= 1 or not 0 <= pg_weight <= 1:
             raise ValueError("Weights must be between 0 and 1")
+        if yara_weight == 0 and pg_weight == 0:
+            raise ValueError("At least one of yara_weight or pg_weight must be non-zero")
         if not 0 <= yara_review_threshold <= yara_hold_threshold:
             raise ValueError("yara_review_threshold must be <= yara_hold_threshold")
         if not 0 <= pg_review_threshold <= pg_hold_threshold:
@@ -151,13 +153,15 @@ def _build_reason(
     yara_score: float,
     pg_score: float,
     evidence: Sequence[YaraEvidence],
-    yara_signal: bool,
-    pg_signal: bool,
+    yara_strong: bool,
+    pg_strong: bool,
 ) -> str:
     parts = [f"YARA={yara_score:.0f}, PG={pg_score:.2f}"]
     if evidence:
         rule_ids = sorted({e.rule_id for e in evidence})
         parts.append(f"YARA hits: {', '.join(rule_ids)}")
-    if pg_signal:
+    if yara_strong:
+        parts.append("YARA strong")
+    if pg_strong:
         parts.append("PG strong")
     return " | ".join(parts)

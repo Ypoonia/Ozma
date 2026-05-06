@@ -11,6 +11,7 @@ from doc_analyse.detection.models import DetectionFinding
 from doc_analyse.detection.normalize import normalize_for_detection
 from doc_analyse.detection.prompt_guard import PromptGuardDetector, _normalise_scores
 from doc_analyse.detection.yara import YaraDetector
+from doc_analyse.ingestion.chunking import _build_byte_to_char
 from doc_analyse.ingestion.models import TextChunk
 
 
@@ -66,13 +67,24 @@ class CheapDetector:
 
     def detect(self, chunk: TextChunk) -> CheapResult:
         """Run Layer 1 on a single chunk, return CheapResult with routing decision."""
-        normalized = normalize_for_detection(chunk.text) if self._normalize else chunk.text
+        if self._normalize:
+            normalized_text = normalize_for_detection(chunk.text)
+        else:
+            normalized_text = chunk.text
 
-        # YARA evidence
-        yara_findings = self._yara.detect(chunk)
+        # YARA evidence from normalized text — rebuild byte_to_char from
+        # normalized text so offsets are consistent with what PG sees.
+        normalized_chunk = TextChunk(
+            text=normalized_text,
+            source=chunk.source,
+            start_char=chunk.start_char,
+            end_char=chunk.start_char + len(normalized_text),
+            metadata={"byte_to_char": _build_byte_to_char(normalized_text)},
+        )
+        yara_findings = self._yara.detect(normalized_chunk)
 
-        # Prompt Guard score
-        pg_score = self._pg_score(normalized)
+        # Prompt Guard score from normalized text
+        pg_score = self._pg_score(normalized_text)
 
         # Router decision
         decision = self._router.route(yara_findings, pg_score)
@@ -96,22 +108,3 @@ class CheapDetector:
         except Exception:
             # Prompt Guard failed (missing deps, etc.) — treat as no signal
             return 0.0
-
-
-class Layer2Classifier:
-    """Wraps a classifier for Layer 2 validation of REVIEW/HOLD chunks."""
-
-    def __init__(self, classifier_factory: Any) -> None:
-        self._factory = classifier_factory
-
-    def validate(self, chunk: TextChunk) -> Any:
-        """Call the LLM classifier on a chunk. Returns ClassificationResult."""
-        classifier = self._factory()
-        return classifier.classify(
-            text=chunk.text,
-            metadata={
-                "source": chunk.source,
-                "start_char": chunk.start_char,
-                "end_char": chunk.end_char,
-            },
-        )

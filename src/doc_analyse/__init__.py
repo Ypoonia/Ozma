@@ -32,7 +32,7 @@ from doc_analyse.detection.cheap import (
     DECISION_SAFE,
     YaraEvidence,
 )
-from doc_analyse.detection.detect import CheapDetector, CheapResult, Layer2Classifier
+from doc_analyse.detection.detect import CheapDetector, CheapResult
 from doc_analyse.ingestion import (
     BaseDocumentConverter,
     ConverterDependencyError,
@@ -97,7 +97,6 @@ __all__ = [
     "ExtractedDocument",
     "GeminiClassifier",
     "IngestedDocument",
-    "Layer2Classifier",
     "MarkItDownDocumentConverter",
     "OpenAIClassifier",
     "ParallelDetector",
