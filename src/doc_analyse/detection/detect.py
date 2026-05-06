@@ -71,6 +71,9 @@ class YaraEvidence:
         if isinstance(f, YaraEvidence):
             return f
         metadata = f.metadata or {}
+        # Router reads raw YARA weight from metadata["yara_weight"].
+        # yara.py stores normalized score in f.score; raw weight is in metadata.
+        raw_weight = float(metadata.get("yara_weight", 0.0))
         return cls(
             rule_id=f.rule_id,
             category=f.category,
@@ -78,7 +81,7 @@ class YaraEvidence:
             span=f.span,
             start_char=f.start_char,
             end_char=f.end_char,
-            weight=f.score if f.score is not None else 0.0,
+            weight=raw_weight,
             route_hint=str(metadata.get("route_hint", "evidence")),
         )
 
