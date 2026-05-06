@@ -11,7 +11,6 @@ from doc_analyse.workers import (
     WorkerPoolError,
     build_stateless_classifier_factory,
 )
-from doc_analyse.workers.pool import CHUNK_TIMEOUT
 
 
 class FakeWorkerClassifier:
