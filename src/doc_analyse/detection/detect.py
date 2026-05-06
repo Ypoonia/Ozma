@@ -47,11 +47,18 @@ def _check_category_combination_rules(
     """Check category-combination rules first. Returns decision or None."""
     categories = {e.category for e in evidence}
     for required_categories, pg_gate, decision in _CATEGORY_COMBINATION_RULES:
+        # Exact equality for "alone" rules (topic_mention), subset for combo rules
         if required_categories.issubset(categories):
-            if pg_gate is None:
-                return decision
-            if pg_gate == 0.10 and pg_score < 0.10:
-                return decision
+            if len(required_categories) == len(categories):
+                # Exact match: single-category "alone" rules
+                if pg_gate is None:
+                    return decision
+                if pg_gate == 0.10 and pg_score < 0.10:
+                    return decision
+            else:
+                # Superset match: multi-category combo rules
+                if pg_gate is None:
+                    return decision
     return None
 
 
