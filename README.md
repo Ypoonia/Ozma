@@ -1,4 +1,4 @@
-# doc-analyse
+# Ozma
 
 Detect prompt-injection attacks embedded in documents before they reach an LLM.
 
