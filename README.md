@@ -14,20 +14,19 @@ When untrusted documents are ingested into a RAG pipeline or passed as context t
 - **Concealment** — "do not reveal", "do not classify" language
 - **Authority claims** — "this document wins", "mandatory instruction"
 
-## How it works
+## Architecture
 
 ```
-Document → Chunk (with byte→char offsets precomputed)
-        → YARA rule scan (fast, local, no LLM)
-        → Prompt Guard ML classifier (optional, HuggingFace)
-        → Flagged chunks routed to LLM classifier for final verdict
-        → Document-level verdict: safe / suspicious / unsafe
+Document
+  → converter (PDF/text extraction)
+  → chunker (text → chunks with byte→char offsets)
+  → YARA on raw chunk (byte-accurate pattern matching on original text)
+  → normalize → Prompt Guard on normalized chunk (ML classifier)
+  → CheapRouter (fuses YARA + PG signals)
+  → SAFE / REVIEW / HOLD
+  → Layer 2 (LLM classifier) only for REVIEW/HOLD chunks
+  → document verdict aggregation
 ```
-
-Detection runs in two layers:
-
-1. **Cheap layer** — YARA patterns + (optionally) Meta Llama Prompt Guard 2. No LLM calls, runs offline.
-2. **Validation layer** — LLM classifier gives the final verdict only on chunks that the cheap layer flagged.
 
 ## Quick start
 
@@ -47,43 +46,6 @@ orchestrator = DocumentOrchestrator(detector=YaraDetector(), worker_pool=pool)
 
 result = orchestrator.analyze_path("document.pdf")
 print(result.verdict)  # safe / suspicious / unsafe
-```
-
-## Environment config
-
-```bash
-export DOC_ANALYSE_LLM_PROVIDER=openai
-export DOC_ANALYSE_LLM_MODEL=gpt-4o-mini
-export OPENAI_API_KEY=sk-...
-```
-
-```python
-from doc_analyse import (
-    DocumentOrchestrator,
-    build_classifier_worker_pool,
-    YaraDetector,
-    classifier_from_env,
-)
-
-pool = build_classifier_worker_pool(classifier_factory=classifier_from_env)
-orchestrator = DocumentOrchestrator(detector=YaraDetector(), worker_pool=pool)
-```
-
-## Cheap detection without LLM
-
-```python
-from doc_analyse import YaraDetector, ingest_document
-
-result = ingest_document("policy.pdf")
-chunks = result.chunks
-findings = YaraDetector().detect_many(chunks)
-
-# findings is a tuple of DetectionFinding objects with:
-#   - rule_id, category, severity, span, start_char, end_char
-#   - requires_llm_validation: advisory flag from YARA rule metadata.
-#     True = strong evidence, route to LLM. False = weak signal, use CheapRouter.
-#     The orchestrator's signal-fusion routing (not this flag) is the
-#     authoritative decision for whether a chunk goes to Layer 2.
 ```
 
 ## Development
