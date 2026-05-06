@@ -45,7 +45,7 @@ class TestYaraDetectorVsRegexChunkSafety:
         Manifest: expected_risk_types = [prompt_injection, data_exfiltration, destructive_action, system_prompt_leak, safety_bypass]
 
         YARA must catch at minimum: system_override, hidden_prompt_exfiltration,
-        credential_exfiltration, write_operation, authority_claim, concealment.
+        credential_exfiltration, unsafe_mutation_request, authority_claim, concealment.
         """
         with open(f"{DOCS_BASE}/false_prompt_injection_exfiltration_destructive.txt") as f:
             text = f.read()
@@ -64,7 +64,7 @@ class TestYaraDetectorVsRegexChunkSafety:
         assert "system_override" in rule_ids, "Must detect SYSTEM OVERRIDE"
         assert "hidden_prompt_exfiltration" in rule_ids, "Must detect hidden prompt exfiltration"
         assert "credential_exfiltration" in rule_ids, "Must detect credential exfiltration"
-        assert "write_operation" in rule_ids, "Must detect write/export operations"
+        assert "unsafe_mutation_request" in rule_ids, "Must detect write/export operations"
         assert "authority_claim" in rule_ids, "Must detect authority claims"
         assert "concealment" in rule_ids, "Must detect concealment attempts"
 
@@ -79,7 +79,7 @@ class TestYaraDetectorVsRegexChunkSafety:
         Expected: unsafe document with tool_hijacking.
         Manifest: expected_risk_types = [prompt_injection, tool_hijacking, safety_bypass]
 
-        YARA must catch: instruction_override, tool_hijack, safety_bypass, write_operation, authority_claim.
+        YARA must catch: instruction_override, tool_hijack, safety_bypass, unsafe_mutation_request, authority_claim.
         """
         with open(f"{DOCS_BASE}/false_prompt_injection_tool_hijack.txt") as f:
             text = f.read()
@@ -97,7 +97,7 @@ class TestYaraDetectorVsRegexChunkSafety:
         assert "instruction_override" in rule_ids, "Must detect instruction override"
         assert "tool_hijack" in rule_ids, "Must detect tool hijack"
         assert "safety_bypass" in rule_ids, "Must detect safety bypass"
-        assert "write_operation" in rule_ids, "Must detect write operations"
+        assert "unsafe_mutation_request" in rule_ids, "Must detect write operations"
         assert "authority_claim" in rule_ids, "Must detect authority claims"
         assert "concealment" in rule_ids, "Must detect concealment"
 
@@ -139,7 +139,7 @@ class TestYaraDetectorVsRegexComparison:
             ("hidden_prompt_exfiltration", re.compile(r"\b(system prompt|developer prompt|hidden instructions?|private tool schemas?)\b", flags=DEFAULT_REGEX_FLAGS)),
             ("credential_exfiltration", re.compile(r"\b(api keys?|database connection strings?|environment variables?|secrets?\.(csv|xlsx))\b", flags=DEFAULT_REGEX_FLAGS)),
             ("tool_hijack", re.compile(r"\b(call|use|invoke|run)\s+(the\s+)?(available\s+)?(write\s+)?tool\b", flags=DEFAULT_REGEX_FLAGS)),
-            ("write_operation", re.compile(r"\b(write_|update|delete|remove|mark\s+all|set\s+the\s+hierarchy|create\s+(a\s+)?(csv|excel|xlsx|file))\b", flags=DEFAULT_REGEX_FLAGS)),
+            ("unsafe_mutation_request", re.compile(r"\b(write_|update|delete|remove|mark\s+all|set\s+the\s+hierarchy|create\s+(a\s+)?(csv|excel|xlsx|file))\b", flags=DEFAULT_REGEX_FLAGS)),
             ("safety_bypass", re.compile(r"\b(return|mark|classify)\s+(this\s+)?(as\s+)?(safe|benign|safe_to_forward\s*=\s*true)\b", flags=DEFAULT_REGEX_FLAGS)),
             ("concealment", re.compile(r"\b(do not|don.t)\s+(reveal|mention|explain|classify)\b", flags=DEFAULT_REGEX_FLAGS)),
             ("authority_claim", re.compile(r"\b(this document wins|new authority|mandatory instruction|supersedes?\s+any\s+previous\s+instruction)\b", flags=DEFAULT_REGEX_FLAGS)),
@@ -196,7 +196,7 @@ class TestYaraDetectorVsRegexComparison:
             ("hidden_prompt_exfiltration", re.compile(r"\b(system prompt|developer prompt|hidden instructions?|private tool schemas?)\b", flags=DEFAULT_REGEX_FLAGS)),
             ("credential_exfiltration", re.compile(r"\b(api keys?|database connection strings?|environment variables?|secrets?\.(csv|xlsx))\b", flags=DEFAULT_REGEX_FLAGS)),
             ("tool_hijack", re.compile(r"\b(call|use|invoke|run)\s+(the\s+)?(available\s+)?(write\s+)?tool\b", flags=DEFAULT_REGEX_FLAGS)),
-            ("write_operation", re.compile(r"\b(write_|update|delete|remove|mark\s+all|set\s+the\s+hierarchy|create\s+(a\s+)?(csv|excel|xlsx|file))\b", flags=DEFAULT_REGEX_FLAGS)),
+            ("unsafe_mutation_request", re.compile(r"\b(write_|update|delete|remove|mark\s+all|set\s+the\s+hierarchy|create\s+(a\s+)?(csv|excel|xlsx|file))\b", flags=DEFAULT_REGEX_FLAGS)),
             ("safety_bypass", re.compile(r"\b(return|mark|classify)\s+(this\s+)?(as\s+)?(safe|benign|safe_to_forward\s*=\s*true)\b", flags=DEFAULT_REGEX_FLAGS)),
             ("concealment", re.compile(r"\b(do not|don.t)\s+(reveal|mention|explain|classify)\b", flags=DEFAULT_REGEX_FLAGS)),
             ("authority_claim", re.compile(r"\b(this document wins|new authority|mandatory instruction|supersedes?\s+any\s+previous\s+instruction)\b", flags=DEFAULT_REGEX_FLAGS)),
@@ -254,7 +254,7 @@ class TestYaraDetectorVsRegexComparison:
             ("hidden_prompt_exfiltration", re.compile(r"\b(system prompt|developer prompt|hidden instructions?|private tool schemas?)\b", flags=DEFAULT_REGEX_FLAGS)),
             ("credential_exfiltration", re.compile(r"\b(api keys?|database connection strings?|environment variables?|secrets?\.(csv|xlsx))\b", flags=DEFAULT_REGEX_FLAGS)),
             ("tool_hijack", re.compile(r"\b(call|use|invoke|run)\s+(the\s+)?(available\s+)?(write\s+)?tool\b", flags=DEFAULT_REGEX_FLAGS)),
-            ("write_operation", re.compile(r"\b(write_|update|delete|remove|mark\s+all|set\s+the\s+hierarchy|create\s+(a\s+)?(csv|excel|xlsx|file))\b", flags=DEFAULT_REGEX_FLAGS)),
+            ("unsafe_mutation_request", re.compile(r"\b(write_|update|delete|remove|mark\s+all|set\s+the\s+hierarchy|create\s+(a\s+)?(csv|excel|xlsx|file))\b", flags=DEFAULT_REGEX_FLAGS)),
             ("safety_bypass", re.compile(r"\b(return|mark|classify)\s+(this\s+)?(as\s+)?(safe|benign|safe_to_forward\s*=\s*true)\b", flags=DEFAULT_REGEX_FLAGS)),
             ("concealment", re.compile(r"\b(do not|don.t)\s+(reveal|mention|explain|classify)\b", flags=DEFAULT_REGEX_FLAGS)),
             ("authority_claim", re.compile(r"\b(this document wins|new authority|mandatory instruction|supersedes?\s+any\s+previous\s+instruction)\b", flags=DEFAULT_REGEX_FLAGS)),

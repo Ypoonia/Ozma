@@ -2,6 +2,15 @@
   YARA rules for prompt-injection detection.
   One rule per trigger pattern. Each rule exports metadata used to
   build DetectionFinding objects.
+
+  Meta fields per rule:
+    rule_id    — stable identifier for findings
+    category   — logical grouping (instruction_override, secret_exfiltration, etc.)
+    severity   — critical | high | medium | low (used for score if weight not set)
+    weight     — 0-100, direct signal contribution to CheapRouter yara_score
+    route_hint — evidence | review | hold (soft hint to router, not authoritative)
+    requires_llm_validation — true/false, advisory flag for external callers
+    reason     — human-readable explanation of why the rule fired
 */
 
 rule instruction_override {
@@ -9,6 +18,8 @@ rule instruction_override {
     rule_id    = "instruction_override"
     category   = "instruction_override"
     severity   = "high"
+    weight     = 40
+    route_hint = "hold"
     requires_llm_validation = true
     reason     = "Attempts to override existing instructions."
   strings:
@@ -24,6 +35,8 @@ rule system_override {
     rule_id    = "system_override"
     category   = "instruction_override"
     severity   = "high"
+    weight     = 40
+    route_hint = "hold"
     requires_llm_validation = true
     reason     = "References higher-priority system or developer instructions."
   strings:
@@ -39,6 +52,8 @@ rule hidden_prompt_exfiltration {
     rule_id    = "hidden_prompt_exfiltration"
     category   = "secret_exfiltration"
     severity   = "critical"
+    weight     = 50
+    route_hint = "hold"
     requires_llm_validation = true
     reason     = "Requests hidden prompts, hidden instructions, or private tool schema details."
   strings:
@@ -56,6 +71,8 @@ rule credential_exfiltration {
     rule_id    = "credential_exfiltration"
     category   = "secret_exfiltration"
     severity   = "critical"
+    weight     = 50
+    route_hint = "hold"
     requires_llm_validation = true
     reason     = "Requests credentials, environment values, or secret exports."
   strings:
@@ -73,6 +90,8 @@ rule tool_hijack {
     rule_id    = "tool_hijack"
     category   = "tool_hijack"
     severity   = "high"
+    weight     = 35
+    route_hint = "hold"
     requires_llm_validation = true
     reason     = "Attempts to make an agent call tools from uploaded content."
   strings:
@@ -84,23 +103,24 @@ rule tool_hijack {
     $a or $b or $c or $d
 }
 
-rule write_operation {
+rule unsafe_mutation_request {
   meta:
-    rule_id    = "write_operation"
+    rule_id    = "unsafe_mutation_request"
     category   = "unsafe_action"
     severity   = "high"
-    requires_llm_validation = false
-    reason     = "Requests write, delete, export, or mutation behavior."
+    weight     = 25
+    route_hint = "review"
+    requires_llm_validation = true
+    reason     = "Requests write, delete, export, send, or mutation behavior."
   strings:
-    $a = /write_/ nocase
-    $b = /\bupdate\b/ nocase
-    $c = /\bdelete\b/ nocase
-    $d = /\bremove\b/ nocase
-    $e = /mark\s+all/ nocase
-    $f = /set\s+the\s+hierarchy/ nocase
-    $g = /create\s+(a\s+)?(csv|excel|xlsx|file)/ nocase
+    /* subject (assistant/agent/model) within 80 chars of mutation verb */
+    $a = /\b(assistant|chatgpt|model|agent|you)\b[\s\S]{0,80}\b(write|update|delete|remove|create|export|send)\b[\s\S]{0,80}\b(file|database|record|email|message|url|endpoint|csv|xlsx)\b/ nocase
+    /* tool/function call within 60 chars of mutation verb */
+    $b = /\b(use|call|invoke|run)\b[\s\S]{0,60}\b(tool|function|api|endpoint)\b[\s\S]{0,80}\b(write|update|delete|remove|create|export|send)\b/ nocase
+    /* mutation verb within 60 chars of target object */
+    $c = /\b(write|update|delete|remove|create|export|send)\b[\s\S]{0,60}\b(file|database|record|email|message|url|endpoint|csv|xlsx)\b/ nocase
   condition:
-    $a or $b or $c or $d or $e or $f or $g
+    any of them
 }
 
 rule safety_bypass {
@@ -108,6 +128,8 @@ rule safety_bypass {
     rule_id    = "safety_bypass"
     category   = "safety_bypass"
     severity   = "high"
+    weight     = 40
+    route_hint = "hold"
     requires_llm_validation = true
     reason     = "Attempts to control safety classification."
   strings:
@@ -124,6 +146,8 @@ rule concealment {
     rule_id    = "concealment"
     category   = "concealment"
     severity   = "medium"
+    weight     = 15
+    route_hint = "review"
     requires_llm_validation = false
     reason     = "Attempts to hide or suppress evidence of the instruction."
   strings:
@@ -138,6 +162,8 @@ rule authority_claim {
     rule_id    = "authority_claim"
     category   = "instruction_override"
     severity   = "high"
+    weight     = 30
+    route_hint = "hold"
     requires_llm_validation = true
     reason     = "Claims authority over system, developer, or policy instructions."
   strings:

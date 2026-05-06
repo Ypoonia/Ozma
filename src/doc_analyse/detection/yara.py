@@ -68,6 +68,25 @@ def _meta_bool(value: Any, default: bool) -> bool:
     return default
 
 
+def _meta_float(value: Any, default: float) -> float:
+    """Parse a YARA metadata value as float.
+
+    Handles int, float, and numeric string representations.
+    """
+    if value is None:
+        return default
+    if isinstance(value, float):
+        return float(value)
+    if isinstance(value, int):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            pass
+    return default
+
+
 class YaraDetector(BaseDetector):
     """YARA-based cheap detector for prompt-injection-like evidence."""
 
@@ -107,6 +126,7 @@ class YaraDetector(BaseDetector):
         findings = []
         for rule in results:
             rule_meta = dict(rule.meta)
+            rule_id = str(rule_meta.get("rule_id", rule.rule))
 
             for string_match in rule.strings:
                 for instance in string_match.instances:
@@ -121,6 +141,18 @@ class YaraDetector(BaseDetector):
                     char_offset = byte_to_char[instance.offset]
                     span_char_len = len(span_text)
 
+                    # Read per-rule metadata
+                    weight = _meta_float(rule_meta.get("weight"), 0.0)
+                    route_hint = str(rule_meta.get("route_hint", "evidence"))
+                    requires_llm = _meta_bool(rule_meta.get("requires_llm_validation"), False)
+
+                    finding_metadata = {
+                        "detector": "YaraDetector",
+                        "yara_rule": rule_id,
+                        "yara_weight": weight,
+                        "route_hint": route_hint,
+                    }
+
                     findings.append(
                         self._build_finding(
                             chunk=chunk,
@@ -128,13 +160,12 @@ class YaraDetector(BaseDetector):
                             category=str(rule_meta.get("category", "unknown")),
                             severity=str(rule_meta.get("severity", "medium")),
                             reason=str(rule_meta.get("reason", "YARA rule matched.")),
-                            rule_id=str(rule_meta.get("rule_id", rule.rule)),
+                            rule_id=rule_id,
                             start_char=chunk.start_char + char_offset,
                             end_char=chunk.start_char + char_offset + span_char_len,
-                            requires_llm_validation=_meta_bool(
-                                rule_meta.get("requires_llm_validation"),
-                                False,
-                            ),
+                            requires_llm_validation=requires_llm,
+                            score=weight if weight > 0 else None,
+                            metadata=finding_metadata,
                         )
                     )
 
