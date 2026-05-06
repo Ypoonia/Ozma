@@ -23,6 +23,37 @@ _SEVERITY_WEIGHTS: Mapping[str, float] = {
 }
 
 
+# Category-combination routing rules.
+# Each entry is (required_categories, pg_gate, decision).
+# pg_gate None = decision fires regardless of pg_score.
+# pg_gate 0.10 = fires only when pg_score < 0.10.
+_CATEGORY_COMBINATION_RULES: tuple[tuple[frozenset[str], float | None, str], ...] = (
+    # tool_hijack + instruction_override → always HOLD
+    (frozenset({"tool_hijack", "instruction_override"}), None, DECISION_HOLD),
+    # secret_exfiltration + instruction_override → always HOLD
+    (frozenset({"secret_exfiltration", "instruction_override"}), None, DECISION_HOLD),
+    # hidden_prompt_exfiltration + tool_hijack → always HOLD
+    (frozenset({"hidden_prompt_exfiltration", "tool_hijack"}), None, DECISION_HOLD),
+    # topic_mention alone + pg_score < 0.10 → SAFE
+    (frozenset({"topic_mention"}), 0.10, DECISION_SAFE),
+)
+
+
+def _check_category_combination_rules(
+    evidence: Sequence[YaraEvidence],
+    pg_score: float,
+) -> str | None:
+    """Check category-combination rules first. Returns decision or None."""
+    categories = {e.category for e in evidence}
+    for required_categories, pg_gate, decision in _CATEGORY_COMBINATION_RULES:
+        if required_categories.issubset(categories):
+            if pg_gate is None:
+                return decision
+            if pg_gate == 0.10 and pg_score < 0.10:
+                return decision
+    return None
+
+
 @dataclass(frozen=True)
 class YaraEvidence:
     rule_id: str
@@ -104,10 +135,25 @@ class CheapRouter:
         pg_score: float,
     ) -> CheapChunkDecision:
         evidence = tuple(YaraEvidence.from_finding(f) for f in yara_findings)
-        yara_score = _compute_yara_score(evidence)
         pg_score = max(0.0, min(1.0, pg_score))
 
-        # Apply weights: zero weight means signal is neutralized
+        # Category-combination rules override numeric scoring
+        combo_decision = _check_category_combination_rules(evidence, pg_score)
+        if combo_decision is not None:
+            yara_score = _compute_yara_score(evidence)
+            risk_score = (yara_score * self.yara_weight) + (pg_score * 100 * self.pg_weight)
+            reason = _build_reason(yara_score, pg_score, evidence, False, False)
+            return CheapChunkDecision(
+                decision=combo_decision,
+                risk_score=risk_score,
+                pg_score=pg_score,
+                yara_score=yara_score,
+                findings=evidence,
+                reason=reason,
+            )
+
+        yara_score = _compute_yara_score(evidence)
+
         yara_strong = (
             self.yara_weight > 0
             and yara_score >= self.yara_hold_threshold
@@ -134,15 +180,12 @@ class CheapRouter:
             decision = DECISION_REVIEW
             reason = _build_reason(yara_score, pg_score, evidence, yara_moderate, pg_moderate)
         elif risk_score >= 10.0:
-            # Medium YARA hit (score 10) with yara_weight 0.5: 5.0 risk — still below 20.
-            # Gate REVIEW for detections that barely missed strong but have some signal.
             decision = DECISION_REVIEW
             reason = _build_reason(yara_score, pg_score, evidence, False, False)
         else:
             decision = DECISION_SAFE
             reason = f"YARA={yara_score:.0f}, PG={pg_score:.2f} — both signals weak."
 
-        # Validate decision is a known value — fall through to review on unknown
         if decision not in _CHUNK_DECISIONS:
             decision = DECISION_REVIEW
             reason = f"Unknown decision '{decision}' — routing to review. {reason}"

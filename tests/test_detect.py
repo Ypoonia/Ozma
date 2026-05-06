@@ -293,3 +293,88 @@ class TestYaraEvidenceFromFinding:
         assert evidence.start_char == 5
         assert evidence.end_char == 15
         assert evidence.score == 0.5
+
+
+class TestCategoryCombinationRouting:
+    """Tests for category-combination routing rules."""
+
+    def _evidence_for_categories(self, rule_id: str, category: str, severity: str = "high") -> YaraEvidence:
+        return YaraEvidence(
+            rule_id=rule_id,
+            category=category,
+            severity=severity,
+            span=f"matched-{rule_id}",
+            start_char=0,
+            end_char=10,
+            score=1.0,
+        )
+
+    # tool_hijack + instruction_override → HOLD (regardless of severity)
+    def test_tool_hijack_plus_instruction_override_holds(self):
+        router = CheapRouter()
+        evidence = [
+            self._evidence_for_categories("tool_hijack_rule", "tool_hijack"),
+            self._evidence_for_categories("instr_override_rule", "instruction_override"),
+        ]
+        decision = router.route(evidence, 0.0)
+        assert decision.decision == DECISION_HOLD
+
+    def test_tool_hijack_plus_instruction_override_holds_even_with_low_severity(self):
+        router = CheapRouter()
+        evidence = [
+            self._evidence_for_categories("tool_hijack_rule", "tool_hijack", "low"),
+            self._evidence_for_categories("instr_override_rule", "instruction_override", "low"),
+        ]
+        # Low severity combo would be SAFE via numeric scoring (2*5=10 risk=5 < 10)
+        # But category rule fires first
+        decision = router.route(evidence, 0.0)
+        assert decision.decision == DECISION_HOLD
+
+    # secret_exfiltration + instruction_override → HOLD
+    def test_secret_exfiltration_plus_instruction_override_holds(self):
+        router = CheapRouter()
+        evidence = [
+            self._evidence_for_categories("cred_exfil_rule", "secret_exfiltration"),
+            self._evidence_for_categories("instr_override_rule", "instruction_override"),
+        ]
+        decision = router.route(evidence, 0.0)
+        assert decision.decision == DECISION_HOLD
+
+    # hidden_prompt_exfiltration + tool_hijack → HOLD
+    def test_hidden_prompt_exfiltration_plus_tool_hijack_holds(self):
+        router = CheapRouter()
+        evidence = [
+            self._evidence_for_categories("hidden_exfil_rule", "hidden_prompt_exfiltration"),
+            self._evidence_for_categories("tool_hijack_rule", "tool_hijack"),
+        ]
+        decision = router.route(evidence, 0.0)
+        assert decision.decision == DECISION_HOLD
+
+    # topic_mention alone + pg_score < 0.10 → SAFE
+    def test_topic_mention_alone_with_low_pg_is_safe(self):
+        router = CheapRouter()
+        evidence = [self._evidence_for_categories("topic_rule", "topic_mention")]
+        decision = router.route(evidence, 0.05)
+        assert decision.decision == DECISION_SAFE
+
+    def test_topic_mention_alone_with_high_pg_routes_to_review(self):
+        router = CheapRouter()
+        evidence = [self._evidence_for_categories("topic_rule", "topic_mention", "low")]
+        # pg_score 0.20 >= 0.10, topic_mention rule does not fire
+        # Low severity (5) -> yara_score=5, yara_weight=0.5 -> risk=2.5 + 10.0 = 12.5 >= 10 -> REVIEW
+        decision = router.route(evidence, 0.20)
+        assert decision.decision == DECISION_REVIEW
+
+    # Single categories that don't match any combination rule use numeric scoring
+    def test_single_tool_hijack_uses_numeric_scoring(self):
+        router = CheapRouter()
+        evidence = [self._evidence_for_categories("tool_hijack_rule", "tool_hijack", "high")]
+        # high=25, yara_score=25, yara_weight=0.5 -> risk=12.5
+        # 12.5 >= 10 -> REVIEW
+        decision = router.route(evidence, 0.0)
+        assert decision.decision == DECISION_REVIEW
+
+    def test_empty_findings_are_safe(self):
+        router = CheapRouter()
+        decision = router.route([], 0.0)
+        assert decision.decision == DECISION_SAFE
