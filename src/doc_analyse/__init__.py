@@ -28,7 +28,6 @@ from doc_analyse.detection.detect import (
     DECISION_REVIEW,
     DECISION_SAFE,
     CheapChunkDecision,
-    CheapResult,
     CheapRouter,
     YaraEvidence,
 )
@@ -72,7 +71,6 @@ __all__ = [
     "BaseClassifier",
     "BaseDetector",
     "CheapChunkDecision",
-    "CheapResult",
     "CheapRouter",
     "ClassificationResult",
     "ChunkAnalysisResult",

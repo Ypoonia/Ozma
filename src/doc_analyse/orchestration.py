@@ -224,6 +224,7 @@ class DocumentOrchestrator:
             idx for idx, d in enumerate(chunk_decisions)
             if d.requires_layer2()
         ]
+        routed_indices_set = set(routed_indices)
 
         # -------------------------------------------------------------------
         # Layer 2 — LLM validation on routed chunks
@@ -256,7 +257,7 @@ class DocumentOrchestrator:
                 chunk=chunk,
                 cheap_findings=findings,
                 cheap_decision=decision,
-                routed_to_llm=idx in routed_indices,
+                routed_to_llm=idx in routed_indices_set,
                 llm_classification=llm,
                 final_verdict=final_verdict,
             ))

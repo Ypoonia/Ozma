@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping, Optional, Sequence
+from typing import Mapping, Sequence
 
 from doc_analyse.detection.models import DetectionFinding
 
@@ -57,13 +57,6 @@ class CheapChunkDecision:
 
     def requires_layer2(self) -> bool:
         return self.decision in {DECISION_REVIEW, DECISION_HOLD}
-
-
-@dataclass(frozen=True)
-class CheapResult:
-    chunk_index: int
-    chunk_text: str
-    decision: CheapChunkDecision
 
 
 # Default thresholds
