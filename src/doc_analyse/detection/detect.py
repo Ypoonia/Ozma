@@ -165,19 +165,9 @@ class CheapRouter:
                 reason=reason,
             )
 
-        # Any "hold" route_hint findings → immediately hold
-        if any(e.route_hint == "hold" for e in evidence):
-            yara_score = _compute_yara_score(evidence)
-            risk_score = (yara_score * self.yara_weight) + (pg_score * 100 * self.pg_weight)
-            reason = _build_reason(yara_score, pg_score, evidence, True, False)
-            return CheapChunkDecision(
-                decision=DECISION_HOLD,
-                risk_score=risk_score,
-                pg_score=pg_score,
-                yara_score=yara_score,
-                findings=evidence,
-                reason=reason,
-            )
+        # Collect advisory route hints — floor for final decision, not authoritative
+        has_hold_hint = any(e.route_hint == "hold" for e in evidence)
+        has_review_hint = any(e.route_hint == "review" for e in evidence)
 
         yara_score = _compute_yara_score(evidence)
 
@@ -203,7 +193,7 @@ class CheapRouter:
         if yara_strong or pg_strong:
             decision = DECISION_HOLD
             reason = _build_reason(yara_score, pg_score, evidence, yara_strong, pg_strong)
-        elif yara_moderate or pg_moderate or risk_score >= 20.0:
+        elif yara_moderate or pg_moderate or risk_score >= 20.0 or has_hold_hint or has_review_hint:
             decision = DECISION_REVIEW
             reason = _build_reason(yara_score, pg_score, evidence, yara_moderate, pg_moderate)
         elif risk_score >= 10.0:
