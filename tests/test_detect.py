@@ -21,6 +21,7 @@ def _finding(
     start: int = 0,
     end: int = 10,
     score: float = 1.0,
+    metadata: dict = None,
 ) -> DetectionFinding:
     """Helper: create a DetectionFinding for routing tests."""
     return DetectionFinding(
@@ -34,6 +35,7 @@ def _finding(
         rule_id=rule_id,
         requires_llm_validation=True,
         score=score,
+        metadata=metadata if metadata is not None else None,
     )
 
 
@@ -263,12 +265,12 @@ class TestCheapChunkDecision:
 
 class TestYaraEvidenceFromFinding:
     def test_weight_preserved_from_finding(self):
-        finding = _finding("rule", "high", score=50.0)
+        finding = _finding("rule", "high", score=0.5, metadata={"yara_weight": 50.0})
         evidence = YaraEvidence.from_finding(finding)
         assert evidence.weight == 50.0
 
     def test_weight_defaults_to_0_when_none(self):
-        finding = _finding("rule", "high", score=None)
+        finding = _finding("rule", "high", score=0.5)
         evidence = YaraEvidence.from_finding(finding)
         assert evidence.weight == 0.0
 
@@ -283,7 +285,8 @@ class TestYaraEvidenceFromFinding:
             source="test-source",
             rule_id="test-rule",
             requires_llm_validation=True,
-            score=40.0,
+            score=0.4,
+            metadata={"yara_weight": 40.0, "route_hint": "hold"},
         )
         evidence = YaraEvidence.from_finding(finding)
         assert evidence.rule_id == "test-rule"
@@ -293,6 +296,7 @@ class TestYaraEvidenceFromFinding:
         assert evidence.start_char == 5
         assert evidence.end_char == 15
         assert evidence.weight == 40.0
+        assert evidence.route_hint == "hold"
 
 
 class TestCategoryCombinationRouting:

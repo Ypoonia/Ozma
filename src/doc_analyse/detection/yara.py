@@ -153,6 +153,10 @@ class YaraDetector(BaseDetector):
                         "route_hint": route_hint,
                     }
 
+                    # Normalize YARA weight to 0.0-1.0 range for the generic score field.
+                    # Raw weight lives in metadata["yara_weight"] for the router.
+                    normalized_score = min(1.0, weight / 100.0) if weight > 0 else None
+
                     findings.append(
                         self._build_finding(
                             chunk=chunk,
@@ -164,7 +168,7 @@ class YaraDetector(BaseDetector):
                             start_char=chunk.start_char + char_offset,
                             end_char=chunk.start_char + char_offset + span_char_len,
                             requires_llm_validation=requires_llm,
-                            score=weight if weight > 0 else None,
+                            score=normalized_score,
                             metadata=finding_metadata,
                         )
                     )
