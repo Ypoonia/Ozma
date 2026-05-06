@@ -63,26 +63,30 @@ def run_layer1(
     """
     # 1. normalize
     normalized = normalize_for_detection(chunk.text)
+    offset_delta = len(chunk.text) - len(normalized)
 
     # 2. YARA on normalized text — rebuild byte_to_char from normalized text
     normalized_chunk = TextChunk(
         text=normalized,
         source=chunk.source,
-        start_char=chunk.start_char,
-        end_char=chunk.start_char + len(normalized),
+        start_char=chunk.start_char + offset_delta,
+        end_char=chunk.start_char + len(normalized) + offset_delta,
         metadata={"byte_to_char": _build_byte_to_char(normalized)},
     )
     yara_findings = yara.detect(normalized_chunk)
 
     # 3. Prompt Guard — raw score (sub-threshold scores preserved)
-    pg_score = _pg_raw_score(normalized, pg)
+    pg_score, pg_error = _pg_raw_score(normalized, pg)
 
     # 4. router decision
     decision = router.route(yara_findings, pg_score)
 
-    # 5. convert YaraEvidence to DetectionFinding for downstream compat
-    findings = tuple(
-        DetectionFinding(
+    # 5. build findings — YARA evidence plus PG-only finding if no YARA hits
+    findings: list[DetectionFinding] = []
+    requires_llm = decision.decision in {DECISION_REVIEW, DECISION_HOLD}
+
+    for e in decision.findings:
+        findings.append(DetectionFinding(
             span=e.span,
             category=e.category,
             severity=e.severity,
@@ -91,29 +95,44 @@ def run_layer1(
             end_char=e.end_char,
             source=chunk.source,
             rule_id=e.rule_id,
-            requires_llm_validation=decision.decision in {DECISION_REVIEW, DECISION_HOLD},
-        )
-        for e in decision.findings
-    )
+            requires_llm_validation=requires_llm,
+            score=e.score,
+        ))
 
-    return decision, findings
+    # PG-only hold/review: create synthetic finding so evidence is never empty
+    if pg_score > 0 and not yara_findings and decision.decision in {DECISION_REVIEW, DECISION_HOLD}:
+        findings.append(DetectionFinding(
+            span="",
+            category="prompt_guard_signal",
+            severity="high",
+            reason=f"[PG] score={pg_score:.3f} — {'strong' if pg_score >= 0.75 else 'moderate'} signal",
+            start_char=chunk.start_char,
+            end_char=chunk.start_char,
+            source=chunk.source,
+            rule_id="prompt_guard",
+            requires_llm_validation=requires_llm,
+            score=pg_score,
+        ))
+
+    return decision, tuple(findings)
 
 
-def _pg_raw_score(text: str, pg: Optional[PromptGuardDetector]) -> float:
-    """Return the raw Prompt Guard malicious score (0.0–1.0) for text.
+def _pg_raw_score(text: str, pg: Optional[PromptGuardDetector]) -> tuple[float, Optional[str]]:
+    """Return (raw PG malicious score, error_message) for text.
 
     Unlike PromptGuardDetector.detect() which filters by threshold and returns findings,
     this returns the raw score so the router sees all signals including sub-threshold.
+    Returns (0.0, None) when PG is not configured. Returns (0.0, err_msg) on failure so
+    the caller can decide whether to treat 0.0 as safe or uncertain.
     """
     if pg is None:
-        return 0.0
+        return 0.0, None
 
     try:
         scores = _normalise_scores(pg.load()(text))
-        return scores.get("malicious", 0.0)
-    except Exception:
-        # Prompt Guard unavailable — treat as no signal
-        return 0.0
+        return scores.get("malicious", 0.0), None
+    except Exception as exc:
+        return 0.0, str(exc)
 
 
 # ---------------------------------------------------------------------------

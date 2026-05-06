@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping, Sequence
+from typing import Mapping, Optional, Sequence
 
 from doc_analyse.detection.models import DetectionFinding
 
@@ -12,6 +12,7 @@ from doc_analyse.detection.models import DetectionFinding
 DECISION_SAFE = "safe"
 DECISION_REVIEW = "review"
 DECISION_HOLD = "hold"
+_CHUNK_DECISIONS = frozenset({DECISION_SAFE, DECISION_REVIEW, DECISION_HOLD})
 
 # Severity weights for YARA score
 _SEVERITY_WEIGHTS: Mapping[str, float] = {
@@ -30,6 +31,7 @@ class YaraEvidence:
     span: str
     start_char: int
     end_char: int
+    score: float = 1.0
 
     @classmethod
     def from_finding(cls, f: DetectionFinding) -> YaraEvidence:
@@ -40,6 +42,7 @@ class YaraEvidence:
             span=f.span,
             start_char=f.start_char,
             end_char=f.end_char,
+            score=f.score if f.score is not None else 1.0,
         )
 
 
@@ -90,6 +93,10 @@ class CheapRouter:
             raise ValueError("yara_review_threshold must be <= yara_hold_threshold")
         if not 0 <= pg_review_threshold <= pg_hold_threshold:
             raise ValueError("pg_review_threshold must be <= pg_hold_threshold")
+        if yara_hold_threshold > 100.0:
+            raise ValueError("yara_hold_threshold cannot exceed 100.0 (YARA score max)")
+        if pg_hold_threshold > 1.0:
+            raise ValueError("pg_hold_threshold cannot exceed 1.0 (PG score max)")
 
         self.yara_review_threshold = yara_review_threshold
         self.yara_hold_threshold = yara_hold_threshold
@@ -107,10 +114,23 @@ class CheapRouter:
         yara_score = _compute_yara_score(evidence)
         pg_score = max(0.0, min(1.0, pg_score))
 
-        yara_strong = yara_score >= self.yara_hold_threshold
-        yara_moderate = yara_score >= self.yara_review_threshold
-        pg_strong = pg_score >= self.pg_hold_threshold
-        pg_moderate = pg_score >= self.pg_review_threshold
+        # Apply weights: zero weight means signal is neutralized
+        yara_strong = (
+            self.yara_weight > 0
+            and yara_score >= self.yara_hold_threshold
+        )
+        yara_moderate = (
+            self.yara_weight > 0
+            and yara_score >= self.yara_review_threshold
+        )
+        pg_strong = (
+            self.pg_weight > 0
+            and pg_score >= self.pg_hold_threshold
+        )
+        pg_moderate = (
+            self.pg_weight > 0
+            and pg_score >= self.pg_review_threshold
+        )
 
         risk_score = (yara_score * self.yara_weight) + (pg_score * 100 * self.pg_weight)
 
@@ -120,9 +140,19 @@ class CheapRouter:
         elif yara_moderate or pg_moderate or risk_score >= 20.0:
             decision = DECISION_REVIEW
             reason = _build_reason(yara_score, pg_score, evidence, yara_moderate, pg_moderate)
+        elif risk_score >= 10.0:
+            # Medium YARA hit (score 10) with yara_weight 0.5: 5.0 risk — still below 20.
+            # Gate REVIEW for detections that barely missed strong but have some signal.
+            decision = DECISION_REVIEW
+            reason = _build_reason(yara_score, pg_score, evidence, False, False)
         else:
             decision = DECISION_SAFE
             reason = f"YARA={yara_score:.0f}, PG={pg_score:.2f} — both signals weak."
+
+        # Validate decision is a known value — fall through to review on unknown
+        if decision not in _CHUNK_DECISIONS:
+            decision = DECISION_REVIEW
+            reason = f"Unknown decision '{decision}' — routing to review. {reason}"
 
         return CheapChunkDecision(
             decision=decision,
@@ -137,7 +167,7 @@ class CheapRouter:
 def _compute_yara_score(evidence: Sequence[YaraEvidence]) -> float:
     if not evidence:
         return 0.0
-    score = sum(_SEVERITY_WEIGHTS.get(e.severity, 10.0) for e in evidence)
+    score = sum(_SEVERITY_WEIGHTS.get(e.severity.strip().lower(), 10.0) for e in evidence)
     return min(100.0, score)
 
 
