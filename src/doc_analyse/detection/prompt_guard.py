@@ -197,10 +197,13 @@ def _normalise_scores(raw_output: Any) -> dict[str, float]:
         if not isinstance(score, (float, int)) or isinstance(score, bool):
             continue
 
-        if label in {"malicious", "jailbreak", "injection"}:
+        # Handle both descriptive labels (malicious/benign) and index labels (LABEL_1/LABEL_0).
+        # LABEL_1 = malicious (injection probability), LABEL_0 = benign (safe probability).
+        label_lower = label.lower()
+        if label_lower in {"malicious", "jailbreak", "injection", "label_1"}:
             scores["malicious"] = max(scores.get("malicious", 0.0), float(score))
             recognized_rows += 1
-        elif label in {"benign", "safe"}:
+        elif label_lower in {"benign", "safe", "label_0"}:
             scores["benign"] = max(scores.get("benign", 0.0), float(score))
             recognized_rows += 1
 
