@@ -31,10 +31,11 @@ _CATEGORY_COMBINATION_RULES: tuple[tuple[frozenset[str], float | None, str], ...
     # tool_hijack + instruction_override → always HOLD
     (frozenset({"tool_hijack", "instruction_override"}), None, DECISION_HOLD),
     # secret_exfiltration + instruction_override → always HOLD
+    # covers hidden_prompt_exfiltration (category=secret_exfiltration) + instruction_override
     (frozenset({"secret_exfiltration", "instruction_override"}), None, DECISION_HOLD),
-    # hidden_prompt_exfiltration + tool_hijack → always HOLD
-    (frozenset({"hidden_prompt_exfiltration", "tool_hijack"}), None, DECISION_HOLD),
-    # topic_mention alone + pg_score < 0.10 → SAFE
+    # secret_exfiltration + tool_hijack → always HOLD
+    (frozenset({"secret_exfiltration", "tool_hijack"}), None, DECISION_HOLD),
+    # topic_mention ALONE (no other categories) + pg_score < 0.10 → SAFE
     (frozenset({"topic_mention"}), 0.10, DECISION_SAFE),
 )
 
@@ -63,9 +64,13 @@ class YaraEvidence:
     start_char: int
     end_char: int
     score: float = 1.0
+    route_hint: str = "evidence"
 
     @classmethod
     def from_finding(cls, f: DetectionFinding) -> YaraEvidence:
+        if isinstance(f, YaraEvidence):
+            return f
+        metadata = f.metadata or {}
         return cls(
             rule_id=f.rule_id,
             category=f.category,
@@ -74,6 +79,7 @@ class YaraEvidence:
             start_char=f.start_char,
             end_char=f.end_char,
             score=f.score if f.score is not None else 1.0,
+            route_hint=str(metadata.get("route_hint", "evidence")),
         )
 
 
@@ -134,7 +140,11 @@ class CheapRouter:
         yara_findings: Sequence[DetectionFinding],
         pg_score: float,
     ) -> CheapChunkDecision:
-        evidence = tuple(YaraEvidence.from_finding(f) for f in yara_findings)
+        # Accept YaraEvidence directly (from tests) or DetectionFinding (from production)
+        evidence: tuple[YaraEvidence, ...] = tuple(
+            f if isinstance(f, YaraEvidence) else YaraEvidence.from_finding(f)
+            for f in yara_findings
+        )
         pg_score = max(0.0, min(1.0, pg_score))
 
         # Category-combination rules override numeric scoring
@@ -145,6 +155,20 @@ class CheapRouter:
             reason = _build_reason(yara_score, pg_score, evidence, False, False)
             return CheapChunkDecision(
                 decision=combo_decision,
+                risk_score=risk_score,
+                pg_score=pg_score,
+                yara_score=yara_score,
+                findings=evidence,
+                reason=reason,
+            )
+
+        # Any "hold" route_hint findings → immediately hold
+        if any(e.route_hint == "hold" for e in evidence):
+            yara_score = _compute_yara_score(evidence)
+            risk_score = (yara_score * self.yara_weight) + (pg_score * 100 * self.pg_weight)
+            reason = _build_reason(yara_score, pg_score, evidence, True, False)
+            return CheapChunkDecision(
+                decision=DECISION_HOLD,
                 risk_score=risk_score,
                 pg_score=pg_score,
                 yara_score=yara_score,
