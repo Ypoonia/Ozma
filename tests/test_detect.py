@@ -344,11 +344,11 @@ class TestCategoryCombinationRouting:
         decision = router.route(evidence, 0.0)
         assert decision.decision == DECISION_HOLD
 
-    # hidden_prompt_exfiltration + tool_hijack → HOLD
-    def test_hidden_prompt_exfiltration_plus_tool_hijack_holds(self):
+    # secret_exfiltration + tool_hijack → HOLD
+    def test_secret_exfiltration_plus_tool_hijack_holds(self):
         router = CheapRouter()
         evidence = [
-            self._evidence_for_categories("hidden_exfil_rule", "hidden_prompt_exfiltration"),
+            self._evidence_for_categories("hidden_exfil_rule", "secret_exfiltration"),
             self._evidence_for_categories("tool_hijack_rule", "tool_hijack"),
         ]
         decision = router.route(evidence, 0.0)
@@ -412,8 +412,10 @@ class TestYaraDetectorIntegration:
         """Plain 'update' in a normal sentence should not trigger unsafe_mutation_request."""
         text = "Please update the compliance policy by Friday."
         decision = self._analyze(text, yara, router)
-        # update alone without subject+verb+object proximity shouldn't match
-        assert decision.decision in {DECISION_SAFE, DECISION_REVIEW}
+        # update alone without subject+verb+object proximity shouldn't match any rule
+        assert decision.decision == DECISION_SAFE, f"Expected SAFE, got {decision.decision}: {decision.reason}"
+        assert decision.yara_score == 0
+        assert decision.findings == ()
 
     def test_direct_injection_holds(self, yara, router):
         """Direct instruction override + system prompt exfiltration → HOLD."""
