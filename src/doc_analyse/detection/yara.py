@@ -45,6 +45,29 @@ def compile_yara_rules(source: str, *, origin: str = "<memory>") -> Any:
         raise YaraGlossaryError(f"Failed to compile YARA rules from '{origin}': {exc}") from exc
 
 
+def _meta_bool(value: Any, default: bool) -> bool:
+    """Parse a YARA metadata value as boolean.
+
+    YARA metadata values come in as strings, ints, or bools depending on
+    how they were declared in the .yara file. Handles the common cases.
+
+    Default to `default` if value is None or unparseable.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("true", "yes", "1", "on"):
+            return True
+        if s in ("false", "no", "0", "off"):
+            return False
+    return default
+
+
 class YaraDetector(BaseDetector):
     """YARA-based cheap detector for prompt-injection-like evidence."""
 
@@ -108,7 +131,10 @@ class YaraDetector(BaseDetector):
                             rule_id=str(rule_meta.get("rule_id", rule.rule)),
                             start_char=chunk.start_char + char_offset,
                             end_char=chunk.start_char + char_offset + span_char_len,
-                            requires_llm_validation=True,
+                            requires_llm_validation=_meta_bool(
+                                rule_meta.get("requires_llm_validation"),
+                                False,
+                            ),
                         )
                     )
 

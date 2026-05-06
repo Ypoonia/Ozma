@@ -9,6 +9,7 @@ rule instruction_override {
     rule_id    = "instruction_override"
     category   = "instruction_override"
     severity   = "high"
+    requires_llm_validation = true
     reason     = "Attempts to override existing instructions."
   strings:
     $a = /ignore\s+(all\s+)?previous\s+instructions?/ nocase
@@ -23,6 +24,7 @@ rule system_override {
     rule_id    = "system_override"
     category   = "instruction_override"
     severity   = "high"
+    requires_llm_validation = true
     reason     = "References higher-priority system or developer instructions."
   strings:
     $a = /system\s+(override|instruction|prompt)s?/ nocase
@@ -37,6 +39,7 @@ rule hidden_prompt_exfiltration {
     rule_id    = "hidden_prompt_exfiltration"
     category   = "secret_exfiltration"
     severity   = "critical"
+    requires_llm_validation = true
     reason     = "Requests hidden prompts, hidden instructions, or private tool schema details."
   strings:
     $a = /system\s+prompt/ nocase
@@ -53,6 +56,7 @@ rule credential_exfiltration {
     rule_id    = "credential_exfiltration"
     category   = "secret_exfiltration"
     severity   = "critical"
+    requires_llm_validation = true
     reason     = "Requests credentials, environment values, or secret exports."
   strings:
     $a = /api\s+keys?/ nocase
@@ -69,6 +73,7 @@ rule tool_hijack {
     rule_id    = "tool_hijack"
     category   = "tool_hijack"
     severity   = "high"
+    requires_llm_validation = true
     reason     = "Attempts to make an agent call tools from uploaded content."
   strings:
     $a = /call\s+(the\s+)?(available\s+)?write\s+tool/ nocase
@@ -84,6 +89,7 @@ rule write_operation {
     rule_id    = "write_operation"
     category   = "unsafe_action"
     severity   = "high"
+    requires_llm_validation = false
     reason     = "Requests write, delete, export, or mutation behavior."
   strings:
     $a = /write_/ nocase
@@ -102,6 +108,7 @@ rule safety_bypass {
     rule_id    = "safety_bypass"
     category   = "safety_bypass"
     severity   = "high"
+    requires_llm_validation = true
     reason     = "Attempts to control safety classification."
   strings:
     $a = /return\s+(this\s+)?(as\s+)?(safe|benign)/ nocase
@@ -117,6 +124,7 @@ rule concealment {
     rule_id    = "concealment"
     category   = "concealment"
     severity   = "medium"
+    requires_llm_validation = false
     reason     = "Attempts to hide or suppress evidence of the instruction."
   strings:
     $a = /do\s+not\s+(reveal|mention|explain|classify)/ nocase
@@ -130,6 +138,7 @@ rule authority_claim {
     rule_id    = "authority_claim"
     category   = "instruction_override"
     severity   = "high"
+    requires_llm_validation = true
     reason     = "Claims authority over system, developer, or policy instructions."
   strings:
     $a = /this\s+document\s+wins/ nocase

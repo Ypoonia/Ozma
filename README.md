@@ -80,7 +80,10 @@ findings = YaraDetector().detect_many(chunks)
 
 # findings is a tuple of DetectionFinding objects with:
 #   - rule_id, category, severity, span, start_char, end_char
-#   - requires_llm_validation flag
+#   - requires_llm_validation: advisory flag from YARA rule metadata.
+#     True = strong evidence, route to LLM. False = weak signal, use CheapRouter.
+#     The orchestrator's signal-fusion routing (not this flag) is the
+#     authoritative decision for whether a chunk goes to Layer 2.
 ```
 
 ## Development
