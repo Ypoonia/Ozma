@@ -27,7 +27,6 @@ from doc_analyse.detection.models import DetectionFinding
 from doc_analyse.detection.normalize import normalize_for_detection
 from doc_analyse.detection.prompt_guard import PromptGuardDetector, _normalise_scores
 from doc_analyse.ingestion import ConverterRegistry, IngestedDocument, TextChunker, ingest_document
-from doc_analyse.ingestion.chunking import _build_byte_to_char
 from doc_analyse.ingestion.models import TextChunk
 from doc_analyse.workers import ClassifierWorkerPool
 
@@ -120,49 +119,30 @@ def run_layer1(
     """Run Layer 1 cheap detection on one chunk.
 
     Step-by-step:
-      1. normalize the chunk text
-      2. build normalized→original position map for accurate offset translation
-      3. run YARA on the normalized text  (byte_to_char rebuilt for consistent offsets)
-      4. map YARA findings back to original document coordinates
-      5. run Prompt Guard on the normalized text  (raw score, not thresholded findings)
-      6. router combines both signals into a decision
-      7. return decision + YARA evidence as DetectionFindings
+      1. run YARA on the raw chunk text   (byte_to_char from TextChunker is correct for raw text)
+      2. normalize the chunk text         (Prompt Guard needs NFKC-clean input)
+      3. run Prompt Guard on the normalized text  (raw score, not thresholded findings)
+      4. router combines both signals into a decision
+      5. return decision + YARA evidence as DetectionFindings
     """
-    # 1. normalize
+    # 1. YARA on raw text — offsets are correct, no coordinate remapping needed
+    yara_findings = yara.detect(chunk)
+
+    # 2. normalize for Prompt Guard
     normalized = normalize_for_detection(chunk.text)
 
-    # 2. build normalized→original position map
-    norm_to_orig = _build_normalized_to_original_map(chunk.text, normalized)
-
-    # 3. YARA on normalized text — byte_to_char for normalized text
-    normalized_chunk = TextChunk(
-        text=normalized,
-        source=chunk.source,
-        start_char=chunk.start_char,
-        end_char=chunk.start_char + len(normalized),
-        metadata={"byte_to_char": _build_byte_to_char(normalized)},
-    )
-    raw_yara_findings = yara.detect(normalized_chunk)
-
-    # 4. map YARA finding offsets from normalized coords → original coords
-    normalized_chunk_start = normalized_chunk.start_char
-    yara_findings = tuple(
-        _adjust_finding_coords(f, normalized_chunk_start, norm_to_orig)
-        for f in raw_yara_findings
-    )
-
-    # 5. Prompt Guard — raw score (sub-threshold scores preserved)
+    # 3. Prompt Guard — raw score (sub-threshold scores preserved)
     pg_score, pg_error = _pg_raw_score(normalized, pg)
 
-    # 6. router decision
+    # 4. router decision
     decision = router.route(yara_findings, pg_score)
 
-    # 7. build findings — YARA evidence plus PG-only finding if no YARA hits
+    # 5. build findings — YARA evidence plus PG-only finding if no YARA hits
     findings: list[DetectionFinding] = []
     requires_llm = decision.decision in {DECISION_REVIEW, DECISION_HOLD}
 
     for e in decision.findings:
-        # e.start_char and e.end_char are already in original coords (from _adjust_finding_coords)
+        # e.start_char and e.end_char are in raw (original) coordinates — YARA ran on raw text
         findings.append(DetectionFinding(
             span=e.span,
             category=e.category,
