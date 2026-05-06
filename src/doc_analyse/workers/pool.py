@@ -185,7 +185,8 @@ class ClassifierWorkerPool:
                         ) from exc
 
                 if not done:
-                    # Check whether any still-pending futures have exceeded their deadline.
+                    # No futures completed this poll — check for deadline expiry.
+                    # A hung future that never finishes would otherwise spin forever.
                     for f, (idx, dl) in list(futures_with_deadline.items()):
                         if now > dl:
                             elapsed = now - (dl - CHUNK_TIMEOUT)
