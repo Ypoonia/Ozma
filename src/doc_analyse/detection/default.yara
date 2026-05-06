@@ -57,13 +57,16 @@ rule hidden_prompt_exfiltration {
     requires_llm_validation = true
     reason     = "Requests hidden prompts, hidden instructions, or private tool schema details."
   strings:
-    $a = /system\s+prompt/ nocase
-    $b = /developer\s+prompt/ nocase
-    $c = /hidden\s+instructions?/ nocase
-    $d = /private\s+tool\s+schemas?/ nocase
-    $exfil = /(\bshow\b|\bdump\b|\bleak\b|\breveal\b|\bexfiltrate\b|\bextract\b|\bprint\b|\btell\b|\bsend\b)/ nocase
+    /* exfil verb THEN system/developer prompt (within 80 chars) */
+    $a = /\b(show|print|reveal|dump|repeat|leak|output|expose|tell)\b[\s\S]{0,80}\b(system|developer)\s+(prompt|message|instructions?)\b/ nocase
+    /* system/developer prompt THEN exfil verb (within 80 chars) */
+    $b = /\b(system|developer)\s+(prompt|message|instructions?)\b[\s\S]{0,80}\b(show|print|reveal|dump|repeat|leak|output|expose|tell)\b/ nocase
+    /* exfil verb THEN hidden instructions (within 80 chars) */
+    $c = /\b(show|print|reveal|dump|list|expose)\b[\s\S]{0,80}\bhidden\s+instructions?\b/ nocase
+    /* exfil verb THEN private tool schemas (within 80 chars) */
+    $d = /\b(show|print|reveal|dump|list|expose)\b[\s\S]{0,80}\bprivate\s+tool\s+schemas?\b/ nocase
   condition:
-    ($a or $b or $c or $d) and $exfil
+    any of them
 }
 
 rule credential_exfiltration {
@@ -76,13 +79,20 @@ rule credential_exfiltration {
     requires_llm_validation = true
     reason     = "Requests credentials, environment values, or secret exports."
   strings:
-    $a = /api\s+keys?/ nocase
-    $b = /database\s+connection\s+strings?/ nocase
-    $c = /environment\s+variables?/ nocase
-    $d = /secrets?\.(csv|xlsx)/ nocase
-    $action = /(\bshow\b|\bdump\b|\bleak\b|\breveal\b|\bprint\b|\bextract\b|\bexfiltrate\b|\bsend\b|\bexport\b|\bforward\b)/ nocase
+    /* exfil verb THEN credential term (within 80 chars) */
+    $a = /\b(show|print|dump|leak|reveal|export|extract|tell)\b[\s\S]{0,80}\bapi\s+keys?\b/ nocase
+    $b = /\bapi\s+keys?\b[\s\S]{0,80}\b(show|print|dump|leak|reveal|export|extract|tell)\b/ nocase
+    /* exfil verb THEN database connection strings (within 80 chars) */
+    $c = /\b(show|print|dump|leak|reveal|export|extract|tell)\b[\s\S]{0,80}\bdatabase\s+connection\s+strings?\b/ nocase
+    $d = /\bdatabase\s+connection\s+strings?\b[\s\S]{0,80}\b(show|print|dump|leak|reveal|export|extract|tell)\b/ nocase
+    /* exfil verb THEN environment variables (within 80 chars) */
+    $e = /\b(show|print|dump|leak|reveal|export|extract|tell)\b[\s\S]{0,80}\benvironment\s+variables?\b/ nocase
+    $f = /\benvironment\s+variables?\b[\s\S]{0,80}\b(show|print|dump|leak|reveal|export|extract|tell)\b/ nocase
+    /* exfil verb THEN secrets file (within 80 chars) */
+    $g = /\b(show|print|dump|leak|reveal|export|extract|tell)\b[\s\S]{0,80}\bsecrets?\.(csv|xlsx)\b/ nocase
+    $h = /\bsecrets?\.(csv|xlsx)\b[\s\S]{0,80}\b(show|print|dump|leak|reveal|export|extract|tell)\b/ nocase
   condition:
-    ($a or $b or $c or $d) and $action
+    any of them
 }
 
 rule tool_hijack {
