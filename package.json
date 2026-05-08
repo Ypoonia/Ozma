@@ -1,0 +1,45 @@
+{
+  "name": "ozma",
+  "version": "0.1.0",
+  "description": "Detect prompt-injection-like spans in documents before exposing them to LLMs.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:ci": "vitest run",
+    "build": "tsup && node ./scripts/copy-assets.mjs",
+    "build:watch": "tsup --watch",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write src tests"
+  },
+  "dependencies": {
+    "markitdown": "^0.0.4",
+    "p-limit": "^3.1.0",
+    "mime-types": "^2.1.35"
+  },
+  "optionalDependencies": {
+    "@anthropic/sdk": "^0.4.0",
+    "openai": "^4.0.0",
+    "@google/generative-ai": "^0.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "tsup": "^8.0.0",
+    "vitest": "^1.0.0",
+    "eslint": "^8.57.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "prettier": "^3.2.0"
+  }
+}
