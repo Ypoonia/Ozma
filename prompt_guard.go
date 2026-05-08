@@ -1,7 +1,10 @@
 package ozma
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
 	"regexp"
 )
 
@@ -32,6 +35,9 @@ type PromptGuardDetector struct {
 }
 
 func NewPromptGuardDetector(client PromptGuardClient) (*PromptGuardDetector, error) {
+	if client == nil {
+		client = DefaultPromptGuardClient()
+	}
 	return NewPromptGuardDetectorWithOptions(client, DefaultPromptGuardModel, DefaultMaliciousThreshold, DefaultUncertainThreshold)
 }
 
@@ -76,6 +82,89 @@ func (d *PromptGuardDetector) RawScore(text string) (PromptGuardScore, error) {
 	score.Malicious = clamp(score.Malicious)
 	score.Benign = clamp(score.Benign)
 	return score, nil
+}
+
+type HuggingFacePromptGuardClient struct {
+	APIKey     string
+	ModelURL   string
+	HTTPClient *http.Client
+}
+
+func NewHuggingFacePromptGuardClient(apiKey string) *HuggingFacePromptGuardClient {
+	return &HuggingFacePromptGuardClient{
+		APIKey:   apiKey,
+		ModelURL: "https://api-inference.huggingface.co/models/meta-llama/Llama-Prompt-Guard-2-86M",
+	}
+}
+
+func DefaultPromptGuardClient() PromptGuardClient {
+	apiKey := os.Getenv("HUGGINGFACE_API_KEY")
+	if apiKey == "" {
+		apiKey = os.Getenv("HF_TOKEN")
+	}
+	if apiKey != "" {
+		return NewHuggingFacePromptGuardClient(apiKey)
+	}
+	return HeuristicPromptGuardClient{}
+}
+
+func (c *HuggingFacePromptGuardClient) Score(text string) (PromptGuardScore, error) {
+	if c.APIKey == "" {
+		return PromptGuardScore{}, PromptGuardDependencyError{Message: "Missing Hugging Face API key. Set HUGGINGFACE_API_KEY or HF_TOKEN."}
+	}
+	data, err := postJSON(c.HTTPClient, c.ModelURL, map[string]string{
+		"Authorization": "Bearer " + c.APIKey,
+	}, map[string]any{"inputs": text})
+	if err != nil {
+		return PromptGuardScore{}, err
+	}
+	return coercePromptGuardScores(data)
+}
+
+func coercePromptGuardScores(data []byte) (PromptGuardScore, error) {
+	var direct PromptGuardScore
+	if err := json.Unmarshal(data, &direct); err == nil && (direct.Malicious != 0 || direct.Benign != 0) {
+		return PromptGuardScore{Malicious: clamp(direct.Malicious), Benign: clamp(direct.Benign)}, nil
+	}
+	var rows [][]map[string]any
+	if err := json.Unmarshal(data, &rows); err == nil {
+		score := PromptGuardScore{Benign: 1}
+		for _, group := range rows {
+			for _, row := range group {
+				label := fmt.Sprint(row["label"])
+				value := toFloat(row["score"])
+				switch label {
+				case "malicious", "MALICIOUS", "jailbreak", "injection", "LABEL_1":
+					if value > score.Malicious {
+						score.Malicious = value
+					}
+				case "benign", "BENIGN", "safe", "LABEL_0":
+					if value > score.Benign || score.Benign == 1 {
+						score.Benign = value
+					}
+				}
+			}
+		}
+		return PromptGuardScore{Malicious: clamp(score.Malicious), Benign: clamp(score.Benign)}, nil
+	}
+	var flat []map[string]any
+	if err := json.Unmarshal(data, &flat); err != nil {
+		return PromptGuardScore{}, err
+	}
+	score := PromptGuardScore{Benign: 1}
+	for _, row := range flat {
+		label := fmt.Sprint(row["label"])
+		value := toFloat(row["score"])
+		switch label {
+		case "malicious", "MALICIOUS", "jailbreak", "injection", "LABEL_1":
+			if value > score.Malicious {
+				score.Malicious = value
+			}
+		case "benign", "BENIGN", "safe", "LABEL_0":
+			score.Benign = value
+		}
+	}
+	return PromptGuardScore{Malicious: clamp(score.Malicious), Benign: clamp(score.Benign)}, nil
 }
 
 type HeuristicPromptGuardClient struct{}

@@ -21,41 +21,43 @@ type WorkerResult struct {
 
 type StatelessClassifierWorker struct {
 	ClassifierFactory func() (Classifier, error)
-	mu                sync.Mutex
-	classifier        Classifier
+	pool              sync.Pool
 }
 
 func NewStatelessClassifierWorker(factory func() (Classifier, error)) *StatelessClassifierWorker {
-	return &StatelessClassifierWorker{ClassifierFactory: factory}
+	worker := &StatelessClassifierWorker{ClassifierFactory: factory}
+	worker.pool.New = func() any {
+		classifier, err := worker.ClassifierFactory()
+		if err != nil {
+			return classifierPoolItem{err: err}
+		}
+		return classifierPoolItem{classifier: classifier}
+	}
+	return worker
 }
 
 func (w *StatelessClassifierWorker) ClassifyChunk(chunk TextChunk) (WorkerResult, error) {
 	if chunk.Text == "" {
 		return WorkerResult{}, fmt.Errorf("Worker chunk text must be a non-empty string.")
 	}
-	classifier, err := w.classifierInstance()
-	if err != nil {
-		return WorkerResult{}, err
+	item := w.pool.Get().(classifierPoolItem)
+	if item.err != nil {
+		return WorkerResult{}, item.err
 	}
-	classification, err := classifier.Classify(chunk.Text, chunkClassificationMetadata(chunk))
+	if item.classifier == nil {
+		return WorkerResult{}, fmt.Errorf("classifier factory returned nil")
+	}
+	defer w.pool.Put(item)
+	classification, err := item.classifier.Classify(chunk.Text, chunkClassificationMetadata(chunk))
 	if err != nil {
 		return WorkerResult{}, err
 	}
 	return WorkerResult{Chunk: chunk, Classification: classification}, nil
 }
 
-func (w *StatelessClassifierWorker) classifierInstance() (Classifier, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.classifier != nil {
-		return w.classifier, nil
-	}
-	classifier, err := w.ClassifierFactory()
-	if err != nil {
-		return nil, err
-	}
-	w.classifier = classifier
-	return classifier, nil
+type classifierPoolItem struct {
+	classifier Classifier
+	err        error
 }
 
 type ClassifierWorkerPool struct {

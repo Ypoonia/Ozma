@@ -1,8 +1,11 @@
 package ozma
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"regexp"
 	"sort"
@@ -118,6 +121,8 @@ func NewBaseClassifier(providerName, defaultModel string, opts ClassifierOptions
 type ClassifierOptions struct {
 	Model              string
 	APIKey             string
+	BaseURL            string
+	HTTPClient         *http.Client
 	Temperature        *float64
 	MaxTokens          *int
 	SystemPrompt       string
@@ -247,6 +252,41 @@ func RequireTextResponse(providerName, text string) (string, error) {
 		return "", ClassifierResponseError{Message: fmt.Sprintf("%s returned no text content.", providerName)}
 	}
 	return strings.TrimSpace(text), nil
+}
+
+func httpClient(client *http.Client) *http.Client {
+	if client != nil {
+		return client
+	}
+	return http.DefaultClient
+}
+
+func postJSON(client *http.Client, url string, headers map[string]string, body any) ([]byte, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	resp, err := httpClient(client).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, readErr
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, ClassifierResponseError{Message: fmt.Sprintf("provider API returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))}
+	}
+	return data, nil
 }
 
 func BuildClassifier(provider string, opts ClassifierOptions) (Classifier, error) {

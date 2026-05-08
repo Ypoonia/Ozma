@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"mime"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -167,15 +168,32 @@ func (c TextDocumentConverter) Convert(path string) (ExtractedDocument, error) {
 
 type MarkItDownDocumentConverter struct {
 	ConvertFunc func(path string) (string, error)
+	Command     string
 }
 
 func (c MarkItDownDocumentConverter) Supports(string) bool { return true }
 
 func (c MarkItDownDocumentConverter) Convert(path string) (ExtractedDocument, error) {
 	if c.ConvertFunc == nil {
-		return ExtractedDocument{}, ConverterDependencyError{
-			Message: "Missing document converter dependency. Configure MarkItDownDocumentConverter.ConvertFunc to convert rich document formats.",
+		command := c.Command
+		if command == "" {
+			command = "markitdown"
 		}
+		if _, err := exec.LookPath(command); err != nil {
+			return ExtractedDocument{}, ConverterDependencyError{
+				Message: "Missing document converter dependency. Install the markitdown CLI or configure MarkItDownDocumentConverter.ConvertFunc to convert rich document formats.",
+			}
+		}
+		output, err := exec.Command(command, path).Output()
+		if err != nil {
+			return ExtractedDocument{}, DocumentConversionError{Message: fmt.Sprintf("Could not convert document with MarkItDown: %s: %v", path, err)}
+		}
+		text := string(output)
+		return documentFromText(path, text, Metadata{
+			"converter":         "markitdown",
+			"extension":         strings.ToLower(filepath.Ext(path)),
+			"normalized_format": "markdown",
+		})
 	}
 	text, err := c.ConvertFunc(path)
 	if err != nil {

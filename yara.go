@@ -4,6 +4,8 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -43,7 +45,10 @@ type compiledRule struct {
 }
 
 type YaraDetector struct {
-	compiled []compiledRule
+	compiled   []compiledRule
+	ruleSource string
+	command    string
+	useNative  bool
 }
 
 func NewYaraDetector() (*YaraDetector, error) {
@@ -51,11 +56,29 @@ func NewYaraDetector() (*YaraDetector, error) {
 	if err != nil {
 		return nil, YaraGlossaryError{Message: "Default YARA rules failed to load."}
 	}
+	if command, err := exec.LookPath("yara"); err == nil {
+		return &YaraDetector{ruleSource: string(source), command: command, useNative: true}, nil
+	}
 	compiled, err := CompileYaraRules(string(source))
 	if err != nil {
 		return nil, err
 	}
-	return &YaraDetector{compiled: compiled}, nil
+	return &YaraDetector{compiled: compiled, ruleSource: string(source)}, nil
+}
+
+func NewNativeYaraDetector(command string) (*YaraDetector, error) {
+	if command == "" {
+		command = "yara"
+	}
+	resolved, err := exec.LookPath(command)
+	if err != nil {
+		return nil, YaraGlossaryError{Message: "real YARA backend requires the yara CLI in PATH"}
+	}
+	source, err := yaraAssets.ReadFile("src/doc_analyse/detection/default.yara")
+	if err != nil {
+		return nil, YaraGlossaryError{Message: "Default YARA rules failed to load."}
+	}
+	return &YaraDetector{ruleSource: string(source), command: resolved, useNative: true}, nil
 }
 
 func YaraDetectorFromFile(path string) (*YaraDetector, error) {
@@ -63,11 +86,14 @@ func YaraDetectorFromFile(path string) (*YaraDetector, error) {
 	if err != nil {
 		return nil, YaraGlossaryError{Message: fmt.Sprintf("Could not read YARA rules file '%s': %v", path, err)}
 	}
+	if command, err := exec.LookPath("yara"); err == nil {
+		return &YaraDetector{ruleSource: string(b), command: command, useNative: true}, nil
+	}
 	compiled, err := CompileYaraRules(string(b))
 	if err != nil {
 		return nil, err
 	}
-	return &YaraDetector{compiled: compiled}, nil
+	return &YaraDetector{compiled: compiled, ruleSource: string(b)}, nil
 }
 
 func CompileYaraRules(source string) ([]compiledRule, error) {
@@ -89,7 +115,13 @@ func (d *YaraDetector) Detect(chunk TextChunk) ([]DetectionFinding, error) {
 	if strings.TrimSpace(chunk.Text) == "" {
 		return nil, nil
 	}
-	if d == nil || len(d.compiled) == 0 {
+	if d == nil {
+		return nil, YaraGlossaryError{Message: "Default YARA rules failed to load. Supply custom rules via YaraDetectorFromFile()."}
+	}
+	if d.useNative {
+		return d.detectNative(chunk)
+	}
+	if len(d.compiled) == 0 {
 		return nil, YaraGlossaryError{Message: "Default YARA rules failed to load. Supply custom rules via YaraDetectorFromFile()."}
 	}
 	byteToChar, _ := chunk.Metadata["byte_to_char"].([]int)
@@ -144,6 +176,89 @@ func (d *YaraDetector) Detect(chunk TextChunk) ([]DetectionFinding, error) {
 					},
 				))
 			}
+		}
+	}
+	return finalizeFindings(findings), nil
+}
+
+func (d *YaraDetector) detectNative(chunk TextChunk) ([]DetectionFinding, error) {
+	if d.command == "" {
+		return nil, YaraGlossaryError{Message: "real YARA backend requires the yara CLI in PATH"}
+	}
+	tmpDir, err := os.MkdirTemp("", "ozma-yara-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+	rulesPath := filepath.Join(tmpDir, "rules.yara")
+	chunkPath := filepath.Join(tmpDir, "chunk.txt")
+	if err := os.WriteFile(rulesPath, []byte(d.ruleSource), 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(chunkPath, []byte(chunk.Text), 0o600); err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(d.command, "-s", "-m", rulesPath, chunkPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, YaraGlossaryError{Message: fmt.Sprintf("YARA CLI failed: %v: %s", err, strings.TrimSpace(string(output)))}
+	}
+	return parseYaraCLIOutput(string(output), chunk)
+}
+
+func parseYaraCLIOutput(output string, chunk TextChunk) ([]DetectionFinding, error) {
+	byteToChar, _ := chunk.Metadata["byte_to_char"].([]int)
+	if byteToChar == nil {
+		byteToChar = BuildByteToChar(chunk.Text)
+	}
+	headerRE := regexp.MustCompile(`^(\S+)(?:\s+\[(.*)\])?\s+`)
+	stringRE := regexp.MustCompile(`^\s*0x([0-9A-Fa-f]+):\$\w+:\s?(.*)$`)
+	var current *yaraRuleMeta
+	findings := []DetectionFinding{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if m := stringRE.FindStringSubmatch(line); len(m) == 3 && current != nil {
+			offset, _ := strconv.ParseInt(m[1], 16, 64)
+			span := m[2]
+			if strings.TrimSpace(span) == "" {
+				continue
+			}
+			charOffset := int(offset)
+			if charOffset >= 0 && charOffset < len(byteToChar) {
+				charOffset = byteToChar[charOffset]
+			}
+			var score *float64
+			if current.Weight > 0 {
+				v := current.Weight / 100
+				if v > 1 {
+					v = 1
+				}
+				score = &v
+			}
+			findings = append(findings, BuildFinding(chunk, span, current.Category, current.Severity, current.Reason, current.RuleID, chunk.StartChar+charOffset, chunk.StartChar+charOffset+utf8.RuneCountInString(span), score, current.RequiresLLMValidation, Metadata{
+				"detector":    "YaraDetector",
+				"yara_rule":   current.RuleID,
+				"yara_weight": current.Weight,
+				"route_hint":  current.RouteHint,
+			}))
+			continue
+		}
+		if m := headerRE.FindStringSubmatch(line); len(m) >= 2 {
+			meta := parseYaraMetadataInline("")
+			meta.RuleID = m[1]
+			if len(m) > 2 {
+				meta = parseYaraMetadataInline(m[2])
+				if meta.RuleID == "" {
+					meta.RuleID = m[1]
+				}
+			}
+			current = &meta
 		}
 	}
 	return finalizeFindings(findings), nil
@@ -230,6 +345,37 @@ func parseYaraMeta(section, ruleName string) yaraRuleMeta {
 		RequiresLLMValidation: parseBool(get("requires_llm_validation", "false")),
 		Reason:                get("reason", "YARA rule matched."),
 	}
+}
+
+func parseYaraMetadataInline(section string) yaraRuleMeta {
+	meta := yaraRuleMeta{
+		Category:  "unknown",
+		Severity:  "medium",
+		RouteHint: "evidence",
+		Reason:    "YARA rule matched.",
+	}
+	fieldRE := regexp.MustCompile(`([A-Za-z_]\w*)=("[^"]*"|[^,\s]+)`)
+	for _, m := range fieldRE.FindAllStringSubmatch(section, -1) {
+		key := strings.ToLower(m[1])
+		value := strings.Trim(m[2], `"`)
+		switch key {
+		case "rule_id":
+			meta.RuleID = value
+		case "category":
+			meta.Category = value
+		case "severity":
+			meta.Severity = value
+		case "weight":
+			meta.Weight, _ = strconv.ParseFloat(value, 64)
+		case "route_hint":
+			meta.RouteHint = value
+		case "requires_llm_validation":
+			meta.RequiresLLMValidation = parseBool(value)
+		case "reason":
+			meta.Reason = value
+		}
+	}
+	return meta
 }
 
 func parseYaraStrings(section string) ([]compiledPattern, error) {
