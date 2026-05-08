@@ -2,6 +2,32 @@
 
 Detect prompt-injection attacks embedded in documents before they reach an LLM.
 
+## Go usage
+
+```go
+package main
+
+import "github.com/Ypoonia/Ozma"
+
+func main() {
+    ingested, err := ozma.IngestDocument("document.txt", nil, nil, ozma.DefaultChunkSize, ozma.DefaultChunkOverlap)
+    if err != nil {
+        panic(err)
+    }
+
+    yara, err := ozma.NewYaraDetector()
+    if err != nil {
+        panic(err)
+    }
+
+    decision, findings, err := ozma.RunLayer1(ingested.Chunks[0], yara, nil, ozma.NewCheapRouter())
+    _, _ = decision, findings
+    if err != nil {
+        panic(err)
+    }
+}
+```
+
 ## Architecture
 
 ```
