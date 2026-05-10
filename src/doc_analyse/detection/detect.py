@@ -229,11 +229,6 @@ class CheapRouter:
             route_reason = "weak_signals"
             reason = f"YARA={yara_score:.0f}, PG={pg_score:.2f} — both signals weak."
 
-        if decision not in _CHUNK_DECISIONS:
-            decision = DECISION_REVIEW
-            route_reason = "unknown_decision_fallback"
-            reason = f"Unknown decision '{decision}' — routing to review. {reason}"
-
         _log_route_decision(
             decision=decision,
             risk_score=risk_score,

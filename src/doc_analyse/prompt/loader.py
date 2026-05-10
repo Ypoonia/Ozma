@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from importlib.resources import files
 from typing import Any, Optional
@@ -10,6 +11,19 @@ CLASSIFICATION_PROMPT_FILE = "classification.md"
 CLASSIFIER_AGENT_PROMPT_FILE = "classifieragent.md"
 TEXT_PLACEHOLDER = "{{ text }}"
 METADATA_PLACEHOLDER = "{{ metadata }}"
+
+# Single-pass substitution: matches the exact placeholder forms above. Doing
+# both replacements in one pass means a value substituted in for one
+# placeholder cannot accidentally introduce another placeholder for the
+# next replacement to consume — i.e. an attacker-controlled metadata value
+# of "{{ text }}" can no longer pull the chunk text into the metadata slot.
+#
+# The pattern matches the *literal* placeholder forms (one space inside the
+# braces) so it stays in lockstep with ``resolve_prompt_text``'s literal-
+# containment validation in ``required_placeholders``. Templates using a
+# different whitespace shape would fail validation anyway; we don't want
+# the substitution to be more permissive than the validator.
+_PLACEHOLDER_PATTERN = re.compile(r"\{\{ (text|metadata) \}\}")
 
 
 class PromptTemplateError(RuntimeError):
@@ -40,11 +54,10 @@ def render_classification_prompt(
     if not isinstance(text, str) or not text.strip():
         raise PromptTemplateError("Classifier input text must be a non-empty string.")
 
-    return (
-        prompt_template.replace(METADATA_PLACEHOLDER, _format_metadata(metadata))
-        .replace(TEXT_PLACEHOLDER, text)
-        .strip()
-    )
+    values = {"text": text, "metadata": _format_metadata(metadata)}
+    return _PLACEHOLDER_PATTERN.sub(
+        lambda match: values[match.group(1)], prompt_template
+    ).strip()
 
 
 def resolve_prompt_text(

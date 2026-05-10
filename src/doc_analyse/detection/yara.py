@@ -237,7 +237,11 @@ def _load_default_rules() -> Any:
     except Exception as exc:
         logger.warning(
             "yara_default_rules_load_failed",
-            extra={"origin": DEFAULT_YARA_RULES_FILE, "error_type": type(exc).__name__},
+            extra={
+                "origin": DEFAULT_YARA_RULES_FILE,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            },
         )
         return None
     logger.info(

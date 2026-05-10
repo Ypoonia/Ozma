@@ -388,6 +388,14 @@ class ClassifierWorkerPool:
         cancelled and recorded with ``error_type='TimeoutError'``, while
         other chunks continue to completion.
 
+        Caveat — ``Future.cancel()`` only un-queues tasks that have not yet
+        started running. ``ThreadPoolExecutor`` cannot interrupt a thread
+        already inside the classifier call, so a hung classifier will keep
+        running in the background until its provider SDK times out at the
+        socket level. We record the timeout and let siblings proceed; we
+        cannot reclaim the worker thread itself. Use SDK-level timeouts to
+        bound the leaked thread's lifetime.
+
         The returned tuple is in input order. Every chunk gets exactly one
         ``WorkerOutcome``.
         """

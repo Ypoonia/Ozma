@@ -117,13 +117,17 @@ def _run_layer1(
     # PG-only hold/review: create synthetic finding so evidence is never empty
     if pg_score > 0 and not yara_findings and decision.decision in {DECISION_REVIEW, DECISION_HOLD}:
         signal = "strong" if pg_score >= 0.75 else "moderate"
+        # PG evaluates the whole chunk, so the finding spans the whole chunk.
+        # Earlier code anchored end_char at chunk.start_char (zero-width),
+        # which made UIs render a hairline at the chunk boundary instead of
+        # highlighting the chunk PG actually scored.
         findings.append(DetectionFinding(
             span="",
             category="prompt_guard_signal",
             severity="high",
             reason=f"[PG] score={pg_score:.3f} — {signal} signal",
             start_char=chunk.start_char,
-            end_char=chunk.start_char,
+            end_char=chunk.end_char,
             source=chunk.source,
             rule_id="prompt_guard",
             requires_llm_validation=requires_llm,
@@ -238,13 +242,15 @@ def _yara_route_hint(
 
 
 def _pg_error_finding(chunk: TextChunk, *, requires_llm: bool) -> DetectionFinding:
+    # PG ran (or tried to) on the whole chunk, so the error finding spans the
+    # whole chunk — same rationale as the PG signal finding above.
     return DetectionFinding(
         span="",
         category="prompt_guard_error",
         severity="high",
         reason="Prompt Guard failed; routed to Layer 2 for review.",
         start_char=chunk.start_char,
-        end_char=chunk.start_char,
+        end_char=chunk.end_char,
         source=chunk.source,
         rule_id="prompt_guard_error",
         requires_llm_validation=requires_llm,
@@ -310,6 +316,22 @@ class DocumentAnalysisResult:
     def chunk_text(self, chunk_index: int) -> str:
         chunk = self.chunk_results[chunk_index].chunk
         return self.ingested_document.text[chunk.start_char:chunk.end_char]
+
+    @property
+    def findings(self) -> tuple[DetectionFinding, ...]:
+        """All Layer 1 findings across all chunks, in chunk-then-finding order.
+
+        Convenience accessor so callers can iterate the document's
+        Layer 1 evidence without walking ``chunk_results`` themselves.
+        Findings are ``DetectionFinding`` objects carrying ``rule_id``,
+        ``span``, ``severity``, ``start_char`` / ``end_char``, and
+        ``metadata`` — enough to render or audit per-document.
+        """
+        return tuple(
+            finding
+            for chunk_result in self.chunk_results
+            for finding in chunk_result.cheap_findings
+        )
 
 
 # ---------------------------------------------------------------------------
