@@ -452,7 +452,9 @@ class DocumentOrchestrator:
             error_pair = llm_errors.get(idx)
 
             if llm is not None:
-                final_verdict = _normalize_verdict(llm.verdict)
+                final_verdict = _apply_layer1_floor(
+                    decision.decision, _normalize_verdict(llm.verdict)
+                )
             elif decision.decision in {DECISION_HOLD, DECISION_REVIEW}:
                 # Layer 1 routed this chunk for LLM review. Whether Layer 2
                 # was skipped (no LLM result) or failed (error_pair set), we
@@ -602,6 +604,34 @@ def _normalize_verdict(raw_verdict: str) -> str:
     if verdict in _ORCHESTRATION_VERDICTS:
         return verdict
     return VERDICT_SUSPICIOUS
+
+
+def _apply_layer1_floor(layer1_decision: str, layer2_verdict: str) -> str:
+    """Enforce that Layer 2 cannot downgrade a routed chunk's verdict to SAFE.
+
+    Layer 1 HOLD/REVIEW means at least one cheap detector (YARA rule or
+    Prompt Guard signal) flagged the chunk. If Layer 2 returns ``safe``,
+    that represents disagreement — not a green light. We pin the routed
+    chunk at SUSPICIOUS minimum so the cheap-detector signal is never
+    silently overridden, while still letting Layer 2 upgrade to UNSAFE.
+
+    Without this floor, an attacker who can craft a chunk that triggers
+    YARA but persuades the LLM it is benign (or a flaky LLM that hallucinates
+    "safe") could exfiltrate past the entire pipeline. The asymmetry is
+    intentional: cheap detectors are conservative and the LLM is fallible,
+    so the LLM gets to upgrade ('actually unsafe') but not downgrade
+    ('actually safe — please ignore the YARA hit').
+
+    Layer 1 SAFE chunks are not routed to Layer 2 at all, so this function
+    is only reached when ``layer1_decision`` is HOLD or REVIEW. The
+    ``layer1_decision == SAFE`` branch is defensive — if a future caller
+    routes SAFE chunks for any reason, we accept Layer 2's verdict
+    unmodified.
+    """
+    if layer1_decision in {DECISION_HOLD, DECISION_REVIEW}:
+        if layer2_verdict == VERDICT_SAFE:
+            return VERDICT_SUSPICIOUS
+    return layer2_verdict
 
 
 # ---------------------------------------------------------------------------
