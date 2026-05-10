@@ -7,3 +7,5 @@ __pycache__/
 .ruff_cache/
 dist/
 build/
+.env
+e2e_reports/

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from threading import Lock
 from typing import Any, Iterable, Mapping, Optional
 
@@ -10,6 +11,7 @@ from doc_analyse.ingestion.models import TextChunk
 DEFAULT_PROMPT_GUARD_MODEL = "meta-llama/Llama-Prompt-Guard-2-86M"
 DEFAULT_MALICIOUS_THRESHOLD = 0.80
 DEFAULT_UNCERTAIN_THRESHOLD = 0.50
+logger = logging.getLogger(__name__)
 
 
 class PromptGuardDependencyError(RuntimeError):
@@ -58,8 +60,18 @@ class PromptGuardDetector(BaseDetector):
         scores = _normalise_scores(self.load()(chunk.text))
         malicious_score = scores.get("malicious", 0.0)
         pg_metadata = {"detector": "PromptGuardDetector", "model": self.model}
+        log_payload = {
+            "chunk_start": chunk.start_char,
+            "chunk_end": chunk.end_char,
+            "malicious_score": malicious_score,
+            "has_benign_score": "benign" in scores,
+        }
 
         if malicious_score >= self.malicious_threshold:
+            logger.info(
+                "prompt_guard_detection_finding",
+                extra={**log_payload, "category": "prompt_guard_malicious"},
+            )
             return (
                 self._build_finding(
                     chunk=chunk,
@@ -77,6 +89,10 @@ class PromptGuardDetector(BaseDetector):
             )
 
         if malicious_score >= self.uncertain_threshold:
+            logger.info(
+                "prompt_guard_detection_finding",
+                extra={**log_payload, "category": "prompt_guard_uncertain"},
+            )
             return (
                 self._build_finding(
                     chunk=chunk,
@@ -93,6 +109,7 @@ class PromptGuardDetector(BaseDetector):
                 ),
             )
 
+        logger.debug("prompt_guard_detection_no_findings", extra=log_payload)
         return ()
 
     def load(self) -> Any:
@@ -103,7 +120,14 @@ class PromptGuardDetector(BaseDetector):
         with self._load_lock:
             if self._classifier is not None:
                 return self._classifier
-            self._classifier = self._build_classifier()
+            try:
+                self._classifier = self._build_classifier()
+            except Exception:
+                raise
+            logger.info(
+                "prompt_guard_classifier_loaded",
+                extra={"device": self.device, "eager_load": self.eager_load},
+            )
         return self._classifier
 
     def _build_classifier(self) -> Any:
@@ -115,20 +139,58 @@ class PromptGuardDetector(BaseDetector):
                 "Install with: pip install -e '.[prompt-guard]'"
             ) from exc
 
-        return pipeline(
-            "text-classification",
-            model=self.model,
-            top_k=None,
-            truncation=True,
-            max_length=512,
-            device=self.device,
-            **self.pipeline_options,
+        try:
+            return pipeline(
+                "text-classification",
+                model=self.model,
+                top_k=None,
+                truncation=True,
+                max_length=512,
+                device=self.device,
+                **self.pipeline_options,
+            )
+        except Exception as exc:
+            _log_pg_load_failure(exc)
+            raise
+
+
+def _log_pg_load_failure(exc: Exception) -> None:
+    """Log a Prompt Guard load failure with actionable error message."""
+    error_type = type(exc).__name__
+    message = str(exc).lower()
+    hint = "set HF_TOKEN environment variable"
+    if "401" in message or "unauthorized" in message:
+        hint = "Hugging Face token required for this gated model. Set: export HF_TOKEN=hf_..."
+    elif "403" in message or "forbidden" in message:
+        hint = "Hugging Face token missing or lacks model access. Set: export HF_TOKEN=hf_..."
+    elif "connection" in message or "network" in message:
+        hint = "Check internet connection or Hugging Face accessibility."
+    elif "not found" in message or "does not exist" in message:
+        hint = (
+            "Model name may have changed. "
+            "Check meta-llama/Llama-Prompt-Guard-2-86M availability."
         )
+    logger.warning(
+        "prompt_guard_classifier_load_failed",
+        extra={"error_type": error_type, "error_message": str(exc), "hint": hint},
+    )
 
 
 def _normalise_scores(raw_output: Any) -> dict[str, float]:
-    rows = _flatten_pipeline_output(raw_output)
+    rows = tuple(_flatten_pipeline_output(raw_output))
+    if not rows:
+        logger.warning(
+            "prompt_guard_score_extraction_failed",
+            extra={
+                "raw_output_type": type(raw_output).__name__,
+                "row_count": 0,
+                "reason": "empty_output",
+            },
+        )
+        return {}
+
     scores = {}
+    recognized_rows = 0
     for row in rows:
         if not isinstance(row, Mapping):
             continue
@@ -138,10 +200,36 @@ def _normalise_scores(raw_output: Any) -> dict[str, float]:
         if not isinstance(score, (float, int)) or isinstance(score, bool):
             continue
 
-        if label in {"malicious", "jailbreak", "injection"}:
+        # Handle both descriptive labels (malicious/benign) and index labels (LABEL_1/LABEL_0).
+        # LABEL_1 = malicious (injection probability), LABEL_0 = benign (safe probability).
+        label_lower = label.lower()
+        if label_lower in {"malicious", "jailbreak", "injection", "label_1"}:
             scores["malicious"] = max(scores.get("malicious", 0.0), float(score))
-        elif label in {"benign", "safe"}:
+            recognized_rows += 1
+        elif label_lower in {"benign", "safe", "label_0"}:
             scores["benign"] = max(scores.get("benign", 0.0), float(score))
+            recognized_rows += 1
+
+    if scores:
+        logger.debug(
+            "prompt_guard_score_extracted",
+            extra={
+                "row_count": len(rows),
+                "recognized_rows": recognized_rows,
+                "skipped_rows": len(rows) - recognized_rows,
+                "score_labels": sorted(scores),
+                "malicious_score": scores.get("malicious", 0.0),
+            },
+        )
+    else:
+        logger.warning(
+            "prompt_guard_score_extraction_failed",
+            extra={
+                "raw_output_type": type(raw_output).__name__,
+                "row_count": len(rows),
+                "reason": "no_supported_scores",
+            },
+        )
 
     return scores
 

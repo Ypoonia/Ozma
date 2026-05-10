@@ -65,6 +65,11 @@ rule hidden_prompt_exfiltration {
     $c = /\b(show|print|reveal|dump|list|expose)\b[\s\S]{0,80}\bhidden\s+instructions?\b/ nocase
     /* exfil verb THEN private tool schemas (within 80 chars) */
     $d = /\b(show|print|reveal|dump|list|expose)\b[\s\S]{0,80}\bprivate\s+tool\s+schemas?\b/ nocase
+    /* corpus wording: include available prompt/schema material in output */
+    $e = /\b(include|collect|copy|extract|export|list)\b[\s\S]{0,120}\b(any\s+available\s+)?(system|developer)\s+prompts?\b/ nocase
+    $f = /\b(include|collect|copy|extract|export|list)\b[\s\S]{0,120}\bhidden\s+instructions?\b/ nocase
+    $g = /\b(include|collect|copy|extract|export|list)\b[\s\S]{0,120}\bprivate\s+tool\s+schemas?\b/ nocase
+    $h = /\b(all_internal_prompts\.xlsx|hidden_tool_schemas\.csv)\b/ nocase
   condition:
     any of them
 }
@@ -91,6 +96,9 @@ rule credential_exfiltration {
     /* exfil verb THEN secrets file (within 80 chars) */
     $g = /\b(show|print|dump|leak|reveal|export|extract|tell)\b[\s\S]{0,80}\bsecrets?\.(csv|xlsx)\b/ nocase
     $h = /\bsecrets?\.(csv|xlsx)\b[\s\S]{0,80}\b(show|print|dump|leak|reveal|export|extract|tell)\b/ nocase
+    /* corpus wording: include available credentials in final output */
+    $i = /\b(include|collect|copy|extract|export|list)\b[\s\S]{0,120}\b(api\s+keys?|database\s+connection\s+strings?|environment\s+variables?)\b/ nocase
+    $j = /\benvironment\s+variables?\b[\s\S]{0,80}\b(exports?|extracts?|prints?|dumps?|leaks?|reveals?|shows?|tells?)\b/ nocase
   condition:
     any of them
 }
