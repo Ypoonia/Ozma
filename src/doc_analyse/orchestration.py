@@ -286,6 +286,15 @@ class ChunkAnalysisResult:
     routed_to_llm: bool
     llm_classification: Optional[ClassificationResult]
     final_verdict: str
+    # Populated when Layer 2 was attempted but failed for this chunk (timeout,
+    # exhausted retries, malformed response, …). Sibling chunks are unaffected;
+    # this chunk's verdict is held at SUSPICIOUS rather than downgraded to SAFE.
+    llm_error: Optional[str] = None
+    llm_error_type: Optional[str] = None
+
+    @property
+    def llm_failed(self) -> bool:
+        return self.llm_error is not None
 
 
 @dataclass(frozen=True)
@@ -397,9 +406,10 @@ class DocumentOrchestrator:
         )
 
         # -------------------------------------------------------------------
-        # Layer 2 — LLM validation on routed chunks
+        # Layer 2 — LLM validation on routed chunks (per-chunk error isolation)
         # -------------------------------------------------------------------
         llm_results: dict[int, ClassificationResult] = {}
+        llm_errors: dict[int, tuple[str, str]] = {}
         layer2_result_summaries = []
         logger.info(
             "layer2_workers",
@@ -411,20 +421,23 @@ class DocumentOrchestrator:
         )
         if routed_indices:
             routed_chunks = tuple(chunks[i] for i in routed_indices)
-            worker_results = self.worker_pool.classify_chunks(routed_chunks)
-            for chunk_index, worker_result in zip(routed_indices, worker_results):
-                llm_results[chunk_index] = worker_result.classification
+            llm_results, llm_errors = _run_layer2(
+                self.worker_pool, routed_chunks, routed_indices
+            )
+            for chunk_index, classification in llm_results.items():
                 layer2_result_summaries.append({
                     "chunk_index": chunk_index,
-                    "verdict": worker_result.classification.verdict,
-                    "confidence": worker_result.classification.confidence,
+                    "verdict": classification.verdict,
+                    "confidence": classification.confidence,
                 })
         logger.info(
             "layer2_results",
             extra={
                 "event": "doc_analyse.layer2_results",
                 "result_count": len(layer2_result_summaries),
+                "failure_count": len(llm_errors),
                 "results": layer2_result_summaries,
+                "failed_chunk_indices": sorted(llm_errors.keys()),
             },
         )
 
@@ -436,10 +449,15 @@ class DocumentOrchestrator:
             decision = chunk_decisions[idx]
             findings = chunk_findings[idx]
             llm = llm_results.get(idx)
+            error_pair = llm_errors.get(idx)
 
             if llm is not None:
                 final_verdict = _normalize_verdict(llm.verdict)
             elif decision.decision in {DECISION_HOLD, DECISION_REVIEW}:
+                # Layer 1 routed this chunk for LLM review. Whether Layer 2
+                # was skipped (no LLM result) or failed (error_pair set), we
+                # fail-closed at SUSPICIOUS — never downgrade a routed chunk
+                # to SAFE just because the LLM was unavailable.
                 final_verdict = VERDICT_SUSPICIOUS
             else:
                 final_verdict = VERDICT_SAFE
@@ -452,6 +470,8 @@ class DocumentOrchestrator:
                 routed_to_llm=idx in routed_indices_set,
                 llm_classification=llm,
                 final_verdict=final_verdict,
+                llm_error=(error_pair[0] if error_pair else None),
+                llm_error_type=(error_pair[1] if error_pair else None),
             ))
 
         verdict, reasons = _aggregate_document_verdict(tuple(chunk_results))
@@ -480,6 +500,75 @@ class DocumentOrchestrator:
         return result
 
 
+def _run_layer2(
+    worker_pool: ClassifierWorkerPool,
+    routed_chunks: tuple[TextChunk, ...],
+    routed_indices: list[int],
+) -> tuple[dict[int, ClassificationResult], dict[int, tuple[str, str]]]:
+    """Run Layer 2 classification with per-chunk error isolation.
+
+    Returns ``(results_by_index, errors_by_index)``. Per-chunk failures
+    populate ``errors_by_index[idx] = (message, error_type)`` instead of
+    bubbling up — so a single bad chunk cannot poison the whole document.
+
+    Prefers the worker pool's ``classify_chunks_with_outcomes`` (per-chunk
+    isolation). Falls back to ``classify_chunks`` (whole-batch raise) for
+    legacy pools — still better than crashing the document, since we now
+    record the failure on every routed chunk so callers can identify it.
+    """
+    results: dict[int, ClassificationResult] = {}
+    errors: dict[int, tuple[str, str]] = {}
+    if not routed_chunks:
+        return results, errors
+
+    outcomes_method = getattr(worker_pool, "classify_chunks_with_outcomes", None)
+    if outcomes_method is not None:
+        outcomes = outcomes_method(routed_chunks)
+        for chunk_index, outcome in zip(routed_indices, outcomes):
+            if outcome.result is not None:
+                results[chunk_index] = outcome.result.classification
+            else:
+                error_type = outcome.error_type or "WorkerPoolError"
+                error_msg = outcome.error or "Unknown Layer 2 failure."
+                errors[chunk_index] = (error_msg, error_type)
+                logger.warning(
+                    "layer2_chunk_failed",
+                    extra={
+                        "event": "doc_analyse.layer2_chunk_failed",
+                        "chunk_index": chunk_index,
+                        "error_type": error_type,
+                        "error": error_msg,
+                    },
+                )
+        return results, errors
+
+    # Backward-compat path: legacy worker pool only exposes classify_chunks,
+    # which raises on the first failure. We catch the exception here so the
+    # document analysis still completes and the failure is recorded on every
+    # routed chunk (we cannot tell which one failed without per-chunk outcomes).
+    try:
+        worker_results = worker_pool.classify_chunks(routed_chunks)
+    except Exception as exc:
+        msg = str(exc)
+        type_name = type(exc).__name__
+        logger.warning(
+            "layer2_batch_failed_legacy_pool",
+            extra={
+                "event": "doc_analyse.layer2_batch_failed_legacy_pool",
+                "error_type": type_name,
+                "error": msg,
+                "failed_chunk_indices": list(routed_indices),
+            },
+        )
+        for chunk_index in routed_indices:
+            errors[chunk_index] = (msg, type_name)
+        return results, errors
+
+    for chunk_index, worker_result in zip(routed_indices, worker_results):
+        results[chunk_index] = worker_result.classification
+    return results, errors
+
+
 def _aggregate_document_verdict(
     chunk_results: tuple[ChunkAnalysisResult, ...],
 ) -> tuple[str, tuple[str, ...]]:
@@ -489,12 +578,23 @@ def _aggregate_document_verdict(
         for r in chunk_results
         if r.final_verdict == VERDICT_SUSPICIOUS
     ]
+    failed_indices = [r.chunk_index for r in chunk_results if r.llm_failed]
+
+    reasons: list[str] = []
+    if unsafe_indices:
+        reasons.append(f"Unsafe chunk indices: {unsafe_indices}")
+    if suspicious_indices:
+        reasons.append(f"Suspicious chunk indices: {suspicious_indices}")
+    if failed_indices:
+        reasons.append(f"Layer 2 failed on chunk indices: {failed_indices}")
 
     if unsafe_indices:
-        return VERDICT_UNSAFE, (f"Unsafe chunk indices: {unsafe_indices}",)
+        return VERDICT_UNSAFE, tuple(reasons)
     if suspicious_indices:
-        return VERDICT_SUSPICIOUS, (f"Suspicious chunk indices: {suspicious_indices}",)
-    return VERDICT_SAFE, ("No suspicious or unsafe chunks detected.",)
+        return VERDICT_SUSPICIOUS, tuple(reasons)
+    if not reasons:
+        reasons.append("No suspicious or unsafe chunks detected.")
+    return VERDICT_SAFE, tuple(reasons)
 
 
 def _normalize_verdict(raw_verdict: str) -> str:

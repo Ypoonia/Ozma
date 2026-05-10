@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Tuple
 from doc_analyse.classifiers import (
     BaseClassifier,
     ClassificationResult,
+    ClassifierResponseError,
     build_classifier,
     classifier_from_env,
 )
@@ -27,6 +29,27 @@ class WorkerPoolError(RuntimeError):
 class WorkerResult:
     chunk: TextChunk
     classification: ClassificationResult
+
+
+@dataclass(frozen=True)
+class WorkerOutcome:
+    """Per-chunk result for ``classify_chunks_with_outcomes``.
+
+    Exactly one of ``result`` and ``error`` is populated. ``error_type`` carries
+    the exception class name (``ClassifierResponseError``, ``TimeoutError``,
+    ``RuntimeError``, …) so callers can distinguish a transient LLM failure
+    from a worker bug or a hung future without parsing the message.
+    """
+
+    chunk: TextChunk
+    chunk_index: int
+    result: Optional[WorkerResult] = None
+    error: Optional[str] = None
+    error_type: Optional[str] = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.result is not None
 
 
 RETRY_DELAYS = (1, 2, 4)  # exponential backoff in seconds between retries
@@ -72,7 +95,16 @@ class StatelessClassifierWorker:
 
 
 def _is_retryable(exc: Exception) -> bool:
-    """Return True for transient errors that may succeed on retry."""
+    """Return True for transient errors that may succeed on retry.
+
+    ClassifierResponseError and json.JSONDecodeError are explicitly retryable
+    even though they subclass ValueError: they typically indicate a flaky LLM
+    response (truncated mid-stream, empty content, malformed JSON) that often
+    succeeds on the next attempt. Other ValueError / TypeError / etc. are
+    treated as permanent input or code bugs and skipped.
+    """
+    if isinstance(exc, (ClassifierResponseError, json.JSONDecodeError)):
+        return True
     return not isinstance(exc, (ValueError, TypeError, KeyError, IndexError, AttributeError))
 
 
@@ -339,6 +371,168 @@ class ClassifierWorkerPool:
             },
         )
         return tuple(results_by_index[index] for index, _ in indexed_chunks)
+
+    def classify_chunks_with_outcomes(
+        self, chunks: Iterable[TextChunk]
+    ) -> Tuple[WorkerOutcome, ...]:
+        """Classify each chunk and return per-chunk outcomes.
+
+        Unlike ``classify_chunks``, this method NEVER raises on per-chunk
+        failure. A bad chunk (exception or timeout) is captured as a
+        ``WorkerOutcome`` with ``error`` populated; sibling chunks continue
+        independently. Use this for fail-soft batches where the orchestrator
+        wants to identify which specific chunks failed (and why) without
+        losing successful results from the rest of the document.
+
+        Per-chunk timeouts (``CHUNK_TIMEOUT``) still apply: a hung chunk is
+        cancelled and recorded with ``error_type='TimeoutError'``, while
+        other chunks continue to completion.
+
+        The returned tuple is in input order. Every chunk gets exactly one
+        ``WorkerOutcome``.
+        """
+        indexed_chunks = tuple(enumerate(chunks))
+        if not indexed_chunks:
+            logger.debug(
+                "worker_pool.empty",
+                extra={"event": "worker_pool.empty", "chunk_count": 0},
+            )
+            return ()
+
+        chunk_by_index: dict[int, TextChunk] = {idx: c for idx, c in indexed_chunks}
+        outcomes_by_index: dict[int, WorkerOutcome] = {}
+
+        futures: dict[Any, int] = {}
+        batch_size = _MAX_CONCURRENT
+        logger.info(
+            "worker_pool.outcomes_submission_started",
+            extra={
+                "event": "worker_pool.outcomes_submission_started",
+                "chunk_count": len(indexed_chunks),
+                "batch_size": batch_size,
+                "max_workers": self.max_workers,
+                "chunk_timeout_seconds": CHUNK_TIMEOUT,
+            },
+        )
+
+        for i in range(0, len(indexed_chunks), batch_size):
+            batch = indexed_chunks[i : i + batch_size]
+            for index, chunk in batch:
+                future = self._executor.submit(
+                    _classify_with_retry, self.worker, chunk, index
+                )
+                futures[future] = index
+
+        futures_with_deadline = {
+            future: (index, monotonic() + CHUNK_TIMEOUT)
+            for future, index in futures.items()
+        }
+
+        try:
+            while futures_with_deadline:
+                wait_result = wait(
+                    list(futures_with_deadline.keys()),
+                    return_when=FIRST_COMPLETED,
+                    timeout=0.5,
+                )
+                done = wait_result.done
+                now = monotonic()
+
+                for future in list(done):
+                    if future not in futures_with_deadline:
+                        continue
+                    index, deadline = futures_with_deadline.pop(future)
+                    chunk = chunk_by_index[index]
+                    elapsed = now - (deadline - CHUNK_TIMEOUT)
+
+                    if elapsed > CHUNK_TIMEOUT:
+                        # Future technically completed past its deadline.
+                        outcomes_by_index[index] = _timeout_outcome(
+                            chunk=chunk, chunk_index=index, elapsed=elapsed
+                        )
+                        continue
+
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        logger.error(
+                            "worker_pool.chunk_failed_isolated",
+                            extra={
+                                "event": "worker_pool.chunk_failed_isolated",
+                                "chunk_index": index,
+                                "elapsed_seconds": round(elapsed, 3),
+                                "retry_count": len(RETRY_DELAYS),
+                                "exception_type": type(exc).__name__,
+                            },
+                        )
+                        outcomes_by_index[index] = WorkerOutcome(
+                            chunk=chunk,
+                            chunk_index=index,
+                            error=(
+                                f"after initial attempt + {len(RETRY_DELAYS)} retries: {exc}"
+                            ),
+                            error_type=type(exc).__name__,
+                        )
+                        continue
+
+                    outcomes_by_index[index] = WorkerOutcome(
+                        chunk=chunk, chunk_index=index, result=result
+                    )
+
+                # Per-chunk deadline expiry on still-pending futures: cancel
+                # the offender, record a timeout outcome, leave siblings alone.
+                if not done:
+                    for pending_future, (idx, dl) in list(
+                        futures_with_deadline.items()
+                    ):
+                        if now > dl:
+                            pending_future.cancel()
+                            elapsed = now - (dl - CHUNK_TIMEOUT)
+                            outcomes_by_index[idx] = _timeout_outcome(
+                                chunk=chunk_by_index[idx],
+                                chunk_index=idx,
+                                elapsed=elapsed,
+                            )
+                            del futures_with_deadline[pending_future]
+        finally:
+            for f in futures_with_deadline:
+                f.cancel()
+
+        # Defensive: ensure every chunk has exactly one outcome.
+        for idx, chunk in indexed_chunks:
+            if idx not in outcomes_by_index:
+                outcomes_by_index[idx] = WorkerOutcome(
+                    chunk=chunk,
+                    chunk_index=idx,
+                    error="No outcome recorded; worker pool dropped this chunk.",
+                    error_type="WorkerPoolError",
+                )
+
+        success_count = sum(1 for o in outcomes_by_index.values() if o.succeeded)
+        logger.info(
+            "worker_pool.outcomes_completed",
+            extra={
+                "event": "worker_pool.outcomes_completed",
+                "chunk_count": len(indexed_chunks),
+                "success_count": success_count,
+                "failure_count": len(indexed_chunks) - success_count,
+            },
+        )
+        return tuple(outcomes_by_index[idx] for idx, _ in indexed_chunks)
+
+
+def _timeout_outcome(
+    *, chunk: TextChunk, chunk_index: int, elapsed: float
+) -> WorkerOutcome:
+    return WorkerOutcome(
+        chunk=chunk,
+        chunk_index=chunk_index,
+        error=(
+            f"Worker timed out after {CHUNK_TIMEOUT:.1f}s "
+            f"(elapsed={elapsed:.3f}s)."
+        ),
+        error_type="TimeoutError",
+    )
 
 
 def build_stateless_classifier_factory(

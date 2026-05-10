@@ -1,6 +1,7 @@
 from doc_analyse.workers.pool import (
     ClassifierWorkerPool,
     StatelessClassifierWorker,
+    WorkerOutcome,
     WorkerPoolError,
     WorkerResult,
     build_classifier_worker_pool,
@@ -10,6 +11,7 @@ from doc_analyse.workers.pool import (
 __all__ = [
     "ClassifierWorkerPool",
     "StatelessClassifierWorker",
+    "WorkerOutcome",
     "WorkerPoolError",
     "WorkerResult",
     "build_classifier_worker_pool",

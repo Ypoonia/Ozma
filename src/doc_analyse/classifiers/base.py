@@ -284,118 +284,163 @@ def _extract_json_object(raw_response: str) -> str:
     return text[start : end + 1]
 
 
-def _try_parse_with_truncation_fallback(text: str) -> dict[str, Any] | None:
-    """Try to parse JSON, handling truncation gracefully.
+# Bound the char-strip retry loop so a pathological response cannot pin a
+# worker thread. 20 iterations is comfortably more than any real recovery
+# needs (each cut moves the parse error strictly leftward).
+_MAX_TRUNCATION_REPAIR_STEPS = 20
 
-    MiniMax sometimes truncates long responses mid-string, leaving unclosed strings
-    and arrays. This attempts to recover by stripping trailing incomplete strings
-    and unclosed containers.
+
+def _try_parse_with_truncation_fallback(text: str) -> Optional[dict[str, Any]]:
+    """Recover a JSON object from a truncated/garbled LLM response.
+
+    LLM providers (e.g. MiniMax) occasionally truncate long responses mid-string
+    or mid-container. We attempt a sequence of cheap repairs:
+
+      1. Direct parse.
+      2. One-shot structural repair: close an unclosed string, supply ``null``
+         for a hanging ``"key":``, drop a trailing comma, then close any
+         unbalanced brackets innermost-first.
+      3. Bounded char-strip from the JSONDecodeError ``pos`` and re-repair
+         until we either succeed or the parser stops making progress.
+
+    Contract: this function NEVER raises. A bug here must not crash the
+    classifier pipeline — callers treat ``None`` as "give up and surface a
+    classifier error". Returns the parsed dict on success or ``None``
+    otherwise.
     """
-    import json
+    if not isinstance(text, str) or not text.strip():
+        return None
 
-    # First try: normal parse
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
+        return _attempt_truncation_repairs(text)
+    except Exception:  # pragma: no cover — defensive: parser bugs never crash callers
+        logger.exception(
+            "classifier.truncation_parser_crashed",
+            extra={"event": "classifier.truncation_parser_crashed"},
+        )
+        return None
 
-    # Second try: strip trailing incomplete strings (unclosed " at end)
-    # Common pattern: '"reason": "Document contains...' (cut off mid-string)
-    try:
-        truncated = text
-        for _ in range(5):
-            try:
-                return json.loads(truncated)
-            except json.JSONDecodeError as exc:
-                if exc.pos is None:
-                    break
-                pos = exc.pos
-                truncated = truncated[:pos].rstrip()
-                m = re.search(r'[^\\]"[,\s]*$', truncated)
-                if m:
-                    truncated = truncated[:m.end() - 1].rstrip() + '"}'
-                else:
-                    break
-    except Exception:
-        pass
 
-    # Third try: handle unclosed arrays/objects at the end
+def _attempt_truncation_repairs(text: str) -> Optional[dict[str, Any]]:
+    # 1. Direct parse.
+    parsed = _safe_json_loads(text)
+    if parsed is not None:
+        return parsed if isinstance(parsed, Mapping) else None
+
+    # 2. Single-pass structural repair.
     repaired = _force_close_unclosed_containers(text)
-    try:
-        return json.loads(repaired)
-    except json.JSONDecodeError:
-        pass
+    parsed = _safe_json_loads(repaired)
+    if parsed is not None:
+        return parsed if isinstance(parsed, Mapping) else None
 
-    # Fourth try: strip character by character from the end
-    # This handles cases where a string is unclosed
-    for _ in range(10):
+    # 3. Bounded char-strip + re-repair. Each iteration cuts at the parser's
+    #    failure position (strictly leftward), strips dangling separators that
+    #    would re-trigger an error, and reapplies the structural repair.
+    candidate = repaired
+    for _ in range(_MAX_TRUNCATION_REPAIR_STEPS):
         try:
-            return json.loads(repaired)
-        except json.JSONDecodeError as exc:
-            if exc.pos is None:
-                break
-            repaired = repaired[:exc.pos].rstrip()
-            if repaired.endswith(","):
-                repaired = repaired[:-1].rstrip() + "}"
-            elif repaired.endswith("}"):
-                repaired = repaired[:-1].rstrip()
-            elif repaired.endswith("]"):
-                repaired = repaired[:-1].rstrip()
-            elif repaired.endswith('"'):
-                repaired = repaired[:-1].rstrip() + '"'
-            else:
-                break
+            result = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError) as exc:
+            pos = getattr(exc, "pos", None)
+            if pos is None or pos <= 0 or pos > len(candidate):
+                return None
+            cut = candidate[:pos].rstrip().rstrip(",:")
+            if not cut:
+                return None
+            new_candidate = _force_close_unclosed_containers(cut)
+            if new_candidate == candidate:
+                # No progress — bail rather than spin.
+                return None
+            candidate = new_candidate
+            continue
+        return result if isinstance(result, Mapping) else None
 
     return None
 
 
-def _force_close_unclosed_containers(text: str) -> str:
-    """Close any unclosed [ and { at the end of truncated JSON.
+def _safe_json_loads(text: str) -> Any:
+    """``json.loads`` that returns None on failure. Never raises."""
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
 
-    Uses a stack-based approach to track open containers, then closes
-    them from innermost to outermost (reverse of opening order).
+
+def _force_close_unclosed_containers(text: str) -> str:
+    """Close unclosed strings and containers in truncated JSON text.
+
+    Walks the text once tracking string state and container nesting, then:
+      1. If the text ends mid-string, closes the string. If the truncation
+         lands mid-escape (``\\``), drops the dangling backslash first so the
+         closing quote is not silently consumed as the escaped char.
+      2. Strips a hanging trailing comma. Supplies ``null`` for a hanging
+         ``"key":`` so the closed object is still valid JSON.
+      3. Appends ``}`` / ``]`` innermost-first to balance any open containers.
+
+    Returns the (possibly modified) text. Never raises.
     """
-    stack = []
+    stack: list[str] = []
     in_string = False
     escape_next = False
+
     for ch in text:
         if escape_next:
             escape_next = False
             continue
-        if ch == "\\" and in_string:
-            escape_next = True
-            continue
-        if ch == '"':
-            in_string = not in_string
-            continue
         if in_string:
+            if ch == "\\":
+                escape_next = True
+            elif ch == '"':
+                in_string = False
             continue
-        if ch in {"{", "["}:
+        # Outside any string from here.
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{" or ch == "[":
             stack.append(ch)
         elif ch == "}":
             if stack and stack[-1] == "{":
                 stack.pop()
+            # else: spurious closer — leave alone; the parser will surface it.
         elif ch == "]":
             if stack and stack[-1] == "[":
                 stack.pop()
 
-    if not stack:
+    repaired = text
+
+    # 1. Close an unclosed string.
+    if in_string:
+        if escape_next and repaired.endswith("\\"):
+            # Drop the dangling backslash so it doesn't escape our closing quote.
+            repaired = repaired[:-1]
+        repaired += '"'
+
+    # 2. Repair dangling separators that would yield invalid JSON when we
+    #    tack closers on. Rstrip whitespace so ``"a": ` and ``"a":`` behave
+    #    the same.
+    repaired = _repair_dangling_separator(repaired)
+
+    # 3. Close containers innermost-first.
+    if stack:
+        closers = "".join("}" if opener == "{" else "]" for opener in reversed(stack))
+        repaired = repaired + closers
+
+    return repaired
+
+
+def _repair_dangling_separator(text: str) -> str:
+    """Drop a hanging trailing ``,`` or supply ``null`` for a hanging ``:``."""
+    stripped = text.rstrip()
+    if not stripped:
         return text
-
-    # Build the closing sequence: innermost first
-    # stack=['{', '['] → reversed=['[', '{'] → closers='}]'
-    # stack=['['] → reversed=['['] → closers=']'
-    # stack=['{'] → reversed=['{'] → closers='}'
-    closers = ""
-    for opener in reversed(stack):
-        closers += "}" if opener == "{" else "]"
-
-    # Simply append the closers without stripping any existing content.
-    # The text typically ends with a complete finding object '...end_char": N}'
-    # and the top-level array [ and object { are unclosed.
-    # Appending '}]' (close array, close top-level) is correct.
-    # We do NOT strip the trailing } — stripping cuts into numeric data.
-    return text.rstrip() + closers
+    last = stripped[-1]
+    if last == ",":
+        return stripped[:-1].rstrip()
+    if last == ":":
+        # ``"key":`` — supply ``null`` so the closer produces valid JSON.
+        return stripped + " null"
+    return text
 
 
 def _clamp_float(value: Any) -> float:

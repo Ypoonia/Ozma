@@ -168,7 +168,7 @@ class CheapRouter:
         combo_decision = _check_category_combination_rules(evidence, pg_score)
         if combo_decision is not None:
             yara_score = _compute_yara_score(evidence)
-            risk_score = (yara_score * self.yara_weight) + (pg_score * 100 * self.pg_weight)
+            risk_score = self._compute_risk_score(yara_score, pg_score)
             reason = _build_reason(yara_score, pg_score, evidence, False, False)
             _log_route_decision(
                 decision=combo_decision,
@@ -210,7 +210,7 @@ class CheapRouter:
             and pg_score >= self.pg_review_threshold
         )
 
-        risk_score = (yara_score * self.yara_weight) + (pg_score * 100 * self.pg_weight)
+        risk_score = self._compute_risk_score(yara_score, pg_score)
 
         if yara_strong or pg_strong:
             decision = DECISION_HOLD
@@ -256,6 +256,19 @@ class CheapRouter:
             findings=evidence,
             reason=reason,
         )
+
+    def _compute_risk_score(self, yara_score: float, pg_score: float) -> float:
+        """Blend YARA (0-100) and PG (0-1) signals, clamped to the 0-100
+        range documented on ``CheapChunkDecision.risk_score``.
+
+        With user-supplied weights summing above 1.0 (each individually
+        capped at 1.0), the unclamped sum can exceed 100; the threshold
+        ladder (>= 20.0, >= 10.0) and the dataclass docstring both treat
+        ``risk_score`` as 0-100, so we clamp here rather than scattering
+        ``min(100.0, ...)`` over every comparison.
+        """
+        blended = (yara_score * self.yara_weight) + (pg_score * 100.0 * self.pg_weight)
+        return min(100.0, max(0.0, blended))
 
 
 def _log_route_decision(
