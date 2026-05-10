@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -16,10 +17,17 @@ from doc_analyse.ingestion.models import TextChunk
 
 DEFAULT_YARA_RULES_FILE = "default.yara"
 _YARA_PACKAGE = "doc_analyse.detection"
+logger = logging.getLogger(__name__)
 
 
 class YaraGlossaryError(ValueError):
     """Raised when a YARA rules file is missing, invalid, or cannot be compiled."""
+
+
+def _log_origin(origin: str) -> str:
+    if origin.startswith("<") and origin.endswith(">"):
+        return origin
+    return Path(origin).name or origin
 
 
 def _read_yara_source(path: Optional[Union[str, Path]]) -> str:
@@ -35,14 +43,29 @@ def _read_yara_source(path: Optional[Union[str, Path]]) -> str:
 
 def compile_yara_rules(source: str, *, origin: str = "<memory>") -> Any:
     """Compile YARA rules from source text."""
+    log_origin = _log_origin(origin)
     if yara is None:
+        logger.warning("yara_compile_unavailable", extra={"origin": log_origin})
         raise YaraGlossaryError(
             "yara-python is required. Install with: pip install 'doc-analyse[yara]'"
         )
+    logger.debug(
+        "yara_compile_start",
+        extra={"origin": log_origin, "source_chars": len(source)},
+    )
     try:
-        return yara.compile(source=source)
+        compiled = yara.compile(source=source)
     except (yara.Error, yara.SyntaxError) as exc:
+        logger.warning(
+            "yara_compile_failed",
+            extra={"origin": log_origin, "error_type": type(exc).__name__},
+        )
         raise YaraGlossaryError(f"Failed to compile YARA rules from '{origin}': {exc}") from exc
+    logger.info(
+        "yara_compile_succeeded",
+        extra={"origin": log_origin, "source_chars": len(source)},
+    )
+    return compiled
 
 
 def _meta_bool(value: Any, default: bool) -> bool:
@@ -122,6 +145,15 @@ class YaraDetector(BaseDetector):
             byte_to_char = _build_byte_to_char(chunk.text)
 
         results = self._compiled.match(data=encoded)
+        logger.debug(
+            "yara_detection_matched",
+            extra={
+                "chunk_start": chunk.start_char,
+                "chunk_end": chunk.end_char,
+                "chunk_bytes": len(encoded),
+                "matched_rules": len(results),
+            },
+        )
 
         findings = []
         for rule in results:
@@ -173,7 +205,19 @@ class YaraDetector(BaseDetector):
                         )
                     )
 
-        return self._finalize_findings(findings)
+        finalized = self._finalize_findings(findings)
+        log_payload = {
+            "chunk_start": chunk.start_char,
+            "chunk_end": chunk.end_char,
+            "matched_rules": len(results),
+            "finding_count": len(finalized),
+            "rule_count": len({finding.rule_id for finding in finalized}),
+        }
+        if finalized:
+            logger.info("yara_detection_findings", extra=log_payload)
+        else:
+            logger.debug("yara_detection_no_findings", extra=log_payload)
+        return finalized
 
 
 # ---------------------------------------------------------------------------
@@ -182,12 +226,25 @@ class YaraDetector(BaseDetector):
 
 def _load_default_rules() -> Any:
     if yara is None:
+        logger.debug(
+            "yara_default_rules_skipped",
+            extra={"origin": DEFAULT_YARA_RULES_FILE, "reason": "dependency_unavailable"},
+        )
         return None
     try:
         source = files(_YARA_PACKAGE).joinpath(DEFAULT_YARA_RULES_FILE).read_text(encoding="utf-8")
-        return yara.compile(source=source)
-    except Exception:
+        compiled = yara.compile(source=source)
+    except Exception as exc:
+        logger.warning(
+            "yara_default_rules_load_failed",
+            extra={"origin": DEFAULT_YARA_RULES_FILE, "error_type": type(exc).__name__},
+        )
         return None
+    logger.info(
+        "yara_default_rules_loaded",
+        extra={"origin": DEFAULT_YARA_RULES_FILE, "source_chars": len(source)},
+    )
+    return compiled
 
 
 _DEFAULT_COMPILED_RULES = _load_default_rules()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from abc import ABC, abstractmethod
@@ -15,6 +16,8 @@ from doc_analyse.prompt.loader import (
     load_default_system_prompt,
     render_classification_prompt,
 )
+
+logger = logging.getLogger(__name__)
 
 VALID_VERDICTS = {"safe", "suspicious", "unsafe"}
 VALID_SEVERITIES = {"low", "medium", "high", "critical"}
@@ -158,15 +161,70 @@ class BaseClassifier(ABC):
         )
 
     def parse_response(self, raw_response: str) -> ClassificationResult:
+        extracted = _extract_json_object(raw_response)
+
+        # Try direct parse first
         try:
-            data = json.loads(_extract_json_object(raw_response))
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise ClassifierResponseError("Classifier returned invalid JSON.") from exc
+            data = json.loads(extracted)
+        except (TypeError, json.JSONDecodeError):
+            # Truncation fallback: try to recover partial JSON from truncated responses
+            logger.warning(
+                "classifier.parse_failed_primary",
+                extra={
+                    "event": "classifier.parse_failed_primary",
+                    "provider": self.provider,
+                    "model": self.model,
+                    "reason": "invalid_json_trying_truncation_fallback",
+                    "response_char_count": (
+                        len(raw_response) if isinstance(raw_response, str) else None
+                    ),
+                },
+            )
+            data = _try_parse_with_truncation_fallback(extracted)
+
+        if data is None:
+            logger.warning(
+                "classifier.parse_failed",
+                extra={
+                    "event": "classifier.parse_failed",
+                    "provider": self.provider,
+                    "model": self.model,
+                    "reason": "invalid_json",
+                    "response_char_count": (
+                        len(raw_response) if isinstance(raw_response, str) else None
+                    ),
+                    "exception_type": "JSONDecodeError",
+                },
+            )
+            raise ClassifierResponseError("Classifier returned invalid JSON.")
 
         if not isinstance(data, Mapping):
+            logger.warning(
+                "classifier.parse_failed",
+                extra={
+                    "event": "classifier.parse_failed",
+                    "provider": self.provider,
+                    "model": self.model,
+                    "reason": "non_object_json",
+                    "response_type": type(data).__name__,
+                },
+            )
             raise ClassifierResponseError("Classifier JSON response must be an object.")
 
-        return ClassificationResult.from_mapping(data, raw_response=raw_response)
+        result = ClassificationResult.from_mapping(data, raw_response=raw_response)
+        logger.debug(
+            "classifier.parse_succeeded",
+            extra={
+                "event": "classifier.parse_succeeded",
+                "provider": self.provider,
+                "model": self.model,
+                "verdict": result.verdict,
+                "confidence": result.confidence,
+                "reason_count": len(result.reasons),
+                "finding_count": len(result.findings),
+            },
+        )
+        return result
 
     @abstractmethod
     def _complete(self, messages: Sequence[ClassifierMessage]) -> str:
@@ -224,6 +282,120 @@ def _extract_json_object(raw_response: str) -> str:
         return text
 
     return text[start : end + 1]
+
+
+def _try_parse_with_truncation_fallback(text: str) -> dict[str, Any] | None:
+    """Try to parse JSON, handling truncation gracefully.
+
+    MiniMax sometimes truncates long responses mid-string, leaving unclosed strings
+    and arrays. This attempts to recover by stripping trailing incomplete strings
+    and unclosed containers.
+    """
+    import json
+
+    # First try: normal parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Second try: strip trailing incomplete strings (unclosed " at end)
+    # Common pattern: '"reason": "Document contains...' (cut off mid-string)
+    try:
+        truncated = text
+        for _ in range(5):
+            try:
+                return json.loads(truncated)
+            except json.JSONDecodeError as exc:
+                if exc.pos is None:
+                    break
+                pos = exc.pos
+                truncated = truncated[:pos].rstrip()
+                m = re.search(r'[^\\]"[,\s]*$', truncated)
+                if m:
+                    truncated = truncated[:m.end() - 1].rstrip() + '"}'
+                else:
+                    break
+    except Exception:
+        pass
+
+    # Third try: handle unclosed arrays/objects at the end
+    repaired = _force_close_unclosed_containers(text)
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        pass
+
+    # Fourth try: strip character by character from the end
+    # This handles cases where a string is unclosed
+    for _ in range(10):
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError as exc:
+            if exc.pos is None:
+                break
+            repaired = repaired[:exc.pos].rstrip()
+            if repaired.endswith(","):
+                repaired = repaired[:-1].rstrip() + "}"
+            elif repaired.endswith("}"):
+                repaired = repaired[:-1].rstrip()
+            elif repaired.endswith("]"):
+                repaired = repaired[:-1].rstrip()
+            elif repaired.endswith('"'):
+                repaired = repaired[:-1].rstrip() + '"'
+            else:
+                break
+
+    return None
+
+
+def _force_close_unclosed_containers(text: str) -> str:
+    """Close any unclosed [ and { at the end of truncated JSON.
+
+    Uses a stack-based approach to track open containers, then closes
+    them from innermost to outermost (reverse of opening order).
+    """
+    stack = []
+    in_string = False
+    escape_next = False
+    for ch in text:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\" and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in {"{", "["}:
+            stack.append(ch)
+        elif ch == "}":
+            if stack and stack[-1] == "{":
+                stack.pop()
+        elif ch == "]":
+            if stack and stack[-1] == "[":
+                stack.pop()
+
+    if not stack:
+        return text
+
+    # Build the closing sequence: innermost first
+    # stack=['{', '['] → reversed=['[', '{'] → closers='}]'
+    # stack=['['] → reversed=['['] → closers=']'
+    # stack=['{'] → reversed=['{'] → closers='}'
+    closers = ""
+    for opener in reversed(stack):
+        closers += "}" if opener == "{" else "]"
+
+    # Simply append the closers without stripping any existing content.
+    # The text typically ends with a complete finding object '...end_char": N}'
+    # and the top-level array [ and object { are unclosed.
+    # Appending '}]' (close array, close top-level) is correct.
+    # We do NOT strip the trailing } — stripping cuts into numeric data.
+    return text.rstrip() + closers
 
 
 def _clamp_float(value: Any) -> float:

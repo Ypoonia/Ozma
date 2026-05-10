@@ -9,9 +9,10 @@ Primary flow:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional, Union
+from typing import Optional, Union
 
 from doc_analyse.classifiers import ClassificationResult
 from doc_analyse.classifiers.base import VALID_VERDICTS
@@ -20,15 +21,18 @@ from doc_analyse.detection.detect import (
     DECISION_HOLD,
     DECISION_REVIEW,
     DECISION_SAFE,
+    CheapChunkDecision,
+    CheapRouter,
     YaraEvidence,
 )
-from doc_analyse.detection.detect import CheapChunkDecision, CheapRouter
 from doc_analyse.detection.models import DetectionFinding
 from doc_analyse.detection.normalize import normalize_for_detection
 from doc_analyse.detection.prompt_guard import PromptGuardDetector, _normalise_scores
 from doc_analyse.ingestion import ConverterRegistry, IngestedDocument, TextChunker, ingest_document
 from doc_analyse.ingestion.models import TextChunk
 from doc_analyse.workers import ClassifierWorkerPool
+
+logger = logging.getLogger(__name__)
 
 VERDICT_SAFE = "safe"
 VERDICT_SUSPICIOUS = "suspicious"
@@ -51,6 +55,24 @@ def run_layer1(
     pg: Optional[PromptGuardDetector],
     router: CheapRouter,
 ) -> tuple[CheapChunkDecision, tuple[DetectionFinding, ...]]:
+    """Run Layer 1 cheap detection on one chunk."""
+    result = _run_layer1(chunk, yara, pg, router)
+    return result.decision, result.findings
+
+
+@dataclass(frozen=True)
+class _Layer1Run:
+    decision: CheapChunkDecision
+    findings: tuple[DetectionFinding, ...]
+    pg_error: Optional[str]
+
+
+def _run_layer1(
+    chunk: TextChunk,
+    yara: YaraDetector,
+    pg: Optional[PromptGuardDetector],
+    router: CheapRouter,
+) -> _Layer1Run:
     """Run Layer 1 cheap detection on one chunk.
 
     Step-by-step:
@@ -71,41 +93,35 @@ def run_layer1(
 
     # 4. router decision
     decision = router.route(yara_findings, pg_score)
+    decision = _fail_closed_pg_decision(decision, pg_error)
 
     # 5. build findings — YARA evidence plus PG-only finding if no YARA hits
     findings: list[DetectionFinding] = []
     requires_llm = decision.decision in {DECISION_REVIEW, DECISION_HOLD}
+    original_yara_findings = {
+        _yara_evidence_key(f): f
+        for f in yara_findings
+    }
 
     for e in decision.findings:
-        # e.start_char and e.end_char are in raw (original) coordinates — YARA ran on raw text
-        # e.weight is the raw YARA weight (0-100); normalized score for display
-        normalized_score = min(1.0, e.weight / 100.0) if e.weight > 0 else None
-        findings.append(DetectionFinding(
-            span=e.span,
-            category=e.category,
-            severity=e.severity,
-            reason=f"[YARA] {e.rule_id} — {e.category} ({e.severity})",
-            start_char=e.start_char,
-            end_char=e.end_char,
-            source=chunk.source,
-            rule_id=e.rule_id,
-            requires_llm_validation=requires_llm,
-            score=normalized_score,
-            metadata={
-                "detector": "YaraDetector",
-                "yara_rule": e.rule_id,
-                "yara_weight": e.weight,
-                "route_hint": e.route_hint,
-            },
+        findings.append(_build_yara_finding(
+            evidence=e,
+            original=original_yara_findings.get(_yara_evidence_key(e)),
+            chunk=chunk,
+            requires_llm=requires_llm,
         ))
+
+    if pg_error and requires_llm:
+        findings.append(_pg_error_finding(chunk, requires_llm=requires_llm))
 
     # PG-only hold/review: create synthetic finding so evidence is never empty
     if pg_score > 0 and not yara_findings and decision.decision in {DECISION_REVIEW, DECISION_HOLD}:
+        signal = "strong" if pg_score >= 0.75 else "moderate"
         findings.append(DetectionFinding(
             span="",
             category="prompt_guard_signal",
             severity="high",
-            reason=f"[PG] score={pg_score:.3f} — {'strong' if pg_score >= 0.75 else 'moderate'} signal",
+            reason=f"[PG] score={pg_score:.3f} — {signal} signal",
             start_char=chunk.start_char,
             end_char=chunk.start_char,
             source=chunk.source,
@@ -114,7 +130,129 @@ def run_layer1(
             score=pg_score,
         ))
 
-    return decision, tuple(findings)
+    return _Layer1Run(decision=decision, findings=tuple(findings), pg_error=pg_error)
+
+
+def _fail_closed_pg_decision(
+    decision: CheapChunkDecision,
+    pg_error: Optional[str],
+) -> CheapChunkDecision:
+    if pg_error is None or decision.decision != DECISION_SAFE:
+        return decision
+
+    reason = "Prompt Guard failed; routing to review."
+    if decision.reason:
+        reason = f"{decision.reason} | {reason}"
+
+    return CheapChunkDecision(
+        decision=DECISION_REVIEW,
+        risk_score=decision.risk_score,
+        pg_score=decision.pg_score,
+        yara_score=decision.yara_score,
+        findings=decision.findings,
+        reason=reason,
+    )
+
+
+def _yara_evidence_key(
+    evidence: Union[DetectionFinding, YaraEvidence],
+) -> tuple[str, int, int, str]:
+    return (
+        evidence.rule_id,
+        evidence.start_char,
+        evidence.end_char,
+        evidence.span,
+    )
+
+
+def _build_yara_finding(
+    *,
+    evidence: Union[DetectionFinding, YaraEvidence],
+    original: Optional[DetectionFinding],
+    chunk: TextChunk,
+    requires_llm: bool,
+) -> DetectionFinding:
+    source = original or evidence
+    metadata = dict(original.metadata) if original is not None else {}
+    raw_weight = _yara_weight(evidence, original)
+    metadata.setdefault("detector", "YaraDetector")
+    metadata.setdefault("yara_rule", evidence.rule_id)
+    metadata.setdefault("yara_weight", raw_weight)
+    metadata.setdefault("route_hint", _yara_route_hint(evidence, original))
+
+    score = source.score if isinstance(source, DetectionFinding) else None
+    if score is None:
+        score = min(1.0, raw_weight / 100.0) if raw_weight > 0 else None
+
+    return DetectionFinding(
+        span=source.span,
+        category=source.category,
+        severity=source.severity,
+        reason=source.reason if isinstance(source, DetectionFinding) else (
+            f"[YARA] {source.rule_id} — {source.category} ({source.severity})"
+        ),
+        start_char=source.start_char,
+        end_char=source.end_char,
+        source=source.source if isinstance(source, DetectionFinding) else chunk.source,
+        rule_id=source.rule_id,
+        requires_llm_validation=requires_llm,
+        score=score,
+        metadata=metadata,
+    )
+
+
+def _yara_weight(
+    evidence: Union[DetectionFinding, YaraEvidence],
+    original: Optional[DetectionFinding],
+) -> float:
+    if isinstance(evidence, YaraEvidence):
+        return evidence.weight
+
+    score_source = original if original is not None else evidence
+    metadata = dict(evidence.metadata or {})
+    if original is not None:
+        metadata.update(original.metadata or {})
+
+    raw_weight = metadata.get("yara_weight")
+    if raw_weight is not None:
+        try:
+            return float(raw_weight)
+        except (TypeError, ValueError):
+            pass
+
+    if isinstance(score_source, DetectionFinding) and score_source.score is not None:
+        return max(0.0, min(100.0, score_source.score * 100.0))
+
+    return 0.0
+
+
+def _yara_route_hint(
+    evidence: Union[DetectionFinding, YaraEvidence],
+    original: Optional[DetectionFinding],
+) -> str:
+    if isinstance(evidence, YaraEvidence):
+        return evidence.route_hint
+    if original is not None:
+        return str((original.metadata or {}).get("route_hint", "evidence"))
+    return str((evidence.metadata or {}).get("route_hint", "evidence"))
+
+
+def _pg_error_finding(chunk: TextChunk, *, requires_llm: bool) -> DetectionFinding:
+    return DetectionFinding(
+        span="",
+        category="prompt_guard_error",
+        severity="high",
+        reason="Prompt Guard failed; routed to Layer 2 for review.",
+        start_char=chunk.start_char,
+        end_char=chunk.start_char,
+        source=chunk.source,
+        rule_id="prompt_guard_error",
+        requires_llm_validation=requires_llm,
+        metadata={
+            "detector": "PromptGuardDetector",
+            "fail_closed": True,
+        },
+    )
 
 
 def _pg_raw_score(text: str, pg: Optional[PromptGuardDetector]) -> tuple[float, Optional[str]]:
@@ -205,6 +343,14 @@ class DocumentOrchestrator:
 
     def analyze_ingested(self, ingested: IngestedDocument) -> DocumentAnalysisResult:
         chunks = ingested.chunks
+        logger.info(
+            "analyze_start",
+            extra={
+                "event": "doc_analyse.analyze_start",
+                "chunk_count": len(chunks),
+                "text_length": len(ingested.text),
+            },
+        )
 
         # -------------------------------------------------------------------
         # Layer 1 — cheap detection on every chunk (visible loop)
@@ -212,10 +358,26 @@ class DocumentOrchestrator:
         chunk_decisions: list[CheapChunkDecision] = []
         chunk_findings: list[tuple[DetectionFinding, ...]] = []
 
-        for chunk in chunks:
-            decision, findings = run_layer1(chunk, self.yara, self.pg, self.router)
+        for idx, chunk in enumerate(chunks):
+            layer1 = _run_layer1(chunk, self.yara, self.pg, self.router)
+            decision = layer1.decision
+            findings = layer1.findings
             chunk_decisions.append(decision)
             chunk_findings.append(findings)
+            log_extra = {
+                "event": "doc_analyse.layer1_decision",
+                "chunk_index": idx,
+                "decision": decision.decision,
+                "requires_layer2": decision.requires_layer2(),
+                "risk_score": decision.risk_score,
+                "yara_score": decision.yara_score,
+                "pg_score": decision.pg_score,
+                "finding_count": len(findings),
+            }
+            if layer1.pg_error is not None:
+                log_extra["pg_error"] = layer1.pg_error
+                log_extra["pg_failed_closed"] = True
+            logger.info("layer1_decision", extra=log_extra)
 
         # -------------------------------------------------------------------
         # Route — only REVIEW/HOLD go to Layer 2
@@ -225,16 +387,46 @@ class DocumentOrchestrator:
             if d.requires_layer2()
         ]
         routed_indices_set = set(routed_indices)
+        logger.info(
+            "routed_indices",
+            extra={
+                "event": "doc_analyse.routed_indices",
+                "routed_count": len(routed_indices),
+                "routed_indices": routed_indices,
+            },
+        )
 
         # -------------------------------------------------------------------
         # Layer 2 — LLM validation on routed chunks
         # -------------------------------------------------------------------
         llm_results: dict[int, ClassificationResult] = {}
+        layer2_result_summaries = []
+        logger.info(
+            "layer2_workers",
+            extra={
+                "event": "doc_analyse.layer2_workers",
+                "submitted_chunk_count": len(routed_indices),
+                "worker_count": getattr(self.worker_pool, "max_workers", None),
+            },
+        )
         if routed_indices:
             routed_chunks = tuple(chunks[i] for i in routed_indices)
             worker_results = self.worker_pool.classify_chunks(routed_chunks)
             for chunk_index, worker_result in zip(routed_indices, worker_results):
                 llm_results[chunk_index] = worker_result.classification
+                layer2_result_summaries.append({
+                    "chunk_index": chunk_index,
+                    "verdict": worker_result.classification.verdict,
+                    "confidence": worker_result.classification.confidence,
+                })
+        logger.info(
+            "layer2_results",
+            extra={
+                "event": "doc_analyse.layer2_results",
+                "result_count": len(layer2_result_summaries),
+                "results": layer2_result_summaries,
+            },
+        )
 
         # -------------------------------------------------------------------
         # Build per-chunk results
@@ -263,19 +455,40 @@ class DocumentOrchestrator:
             ))
 
         verdict, reasons = _aggregate_document_verdict(tuple(chunk_results))
-        return DocumentAnalysisResult(
+        logger.info(
+            "aggregate_verdict",
+            extra={
+                "event": "doc_analyse.aggregate_verdict",
+                "verdict": verdict,
+                "reasons": reasons,
+            },
+        )
+        result = DocumentAnalysisResult(
             ingested_document=ingested,
             chunk_results=tuple(chunk_results),
             verdict=verdict,
             reasons=reasons,
         )
+        logger.info(
+            "analyze_end",
+            extra={
+                "event": "doc_analyse.analyze_end",
+                "chunk_count": len(result.chunk_results),
+                "verdict": result.verdict,
+            },
+        )
+        return result
 
 
 def _aggregate_document_verdict(
     chunk_results: tuple[ChunkAnalysisResult, ...],
 ) -> tuple[str, tuple[str, ...]]:
     unsafe_indices = [r.chunk_index for r in chunk_results if r.final_verdict == VERDICT_UNSAFE]
-    suspicious_indices = [r.chunk_index for r in chunk_results if r.final_verdict == VERDICT_SUSPICIOUS]
+    suspicious_indices = [
+        r.chunk_index
+        for r in chunk_results
+        if r.final_verdict == VERDICT_SUSPICIOUS
+    ]
 
     if unsafe_indices:
         return VERDICT_UNSAFE, (f"Unsafe chunk indices: {unsafe_indices}",)

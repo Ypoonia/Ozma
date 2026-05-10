@@ -166,7 +166,10 @@ def _log_pg_load_failure(exc: Exception) -> None:
     elif "connection" in message or "network" in message:
         hint = "Check internet connection or Hugging Face accessibility."
     elif "not found" in message or "does not exist" in message:
-        hint = "Model name may have changed. Check meta-llama/Llama-Prompt-Guard-2-86M availability."
+        hint = (
+            "Model name may have changed. "
+            "Check meta-llama/Llama-Prompt-Guard-2-86M availability."
+        )
     logger.warning(
         "prompt_guard_classifier_load_failed",
         extra={"error_type": error_type, "error_message": str(exc), "hint": hint},

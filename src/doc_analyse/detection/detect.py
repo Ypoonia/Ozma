@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from doc_analyse.detection.models import DetectionFinding
-
 
 # Routing decisions
 DECISION_SAFE = "safe"
 DECISION_REVIEW = "review"
 DECISION_HOLD = "hold"
 _CHUNK_DECISIONS = frozenset({DECISION_SAFE, DECISION_REVIEW, DECISION_HOLD})
+logger = logging.getLogger(__name__)
 
 # Severity weights for YARA score
 _SEVERITY_WEIGHTS: Mapping[str, float] = {
@@ -155,7 +156,13 @@ class CheapRouter:
             f if isinstance(f, YaraEvidence) else YaraEvidence.from_finding(f)
             for f in yara_findings
         )
+        raw_pg_score = pg_score
         pg_score = max(0.0, min(1.0, pg_score))
+        if pg_score != raw_pg_score:
+            logger.debug(
+                "cheap_router_pg_score_clamped",
+                extra={"input_pg_score": raw_pg_score, "pg_score": pg_score},
+            )
 
         # Category-combination rules override numeric scoring
         combo_decision = _check_category_combination_rules(evidence, pg_score)
@@ -163,6 +170,14 @@ class CheapRouter:
             yara_score = _compute_yara_score(evidence)
             risk_score = (yara_score * self.yara_weight) + (pg_score * 100 * self.pg_weight)
             reason = _build_reason(yara_score, pg_score, evidence, False, False)
+            _log_route_decision(
+                decision=combo_decision,
+                risk_score=risk_score,
+                pg_score=pg_score,
+                yara_score=yara_score,
+                evidence=evidence,
+                route_reason="category_combination",
+            )
             return CheapChunkDecision(
                 decision=combo_decision,
                 risk_score=risk_score,
@@ -199,21 +214,40 @@ class CheapRouter:
 
         if yara_strong or pg_strong:
             decision = DECISION_HOLD
+            route_reason = "strong_signal"
             reason = _build_reason(yara_score, pg_score, evidence, yara_strong, pg_strong)
         elif yara_moderate or pg_moderate or risk_score >= 20.0 or has_hold_hint or has_review_hint:
             decision = DECISION_REVIEW
+            route_reason = "moderate_signal_or_hint"
             reason = _build_reason(yara_score, pg_score, evidence, yara_moderate, pg_moderate)
         elif risk_score >= 10.0:
             decision = DECISION_REVIEW
+            route_reason = "risk_score_floor"
             reason = _build_reason(yara_score, pg_score, evidence, False, False)
         else:
             decision = DECISION_SAFE
+            route_reason = "weak_signals"
             reason = f"YARA={yara_score:.0f}, PG={pg_score:.2f} — both signals weak."
 
         if decision not in _CHUNK_DECISIONS:
             decision = DECISION_REVIEW
+            route_reason = "unknown_decision_fallback"
             reason = f"Unknown decision '{decision}' — routing to review. {reason}"
 
+        _log_route_decision(
+            decision=decision,
+            risk_score=risk_score,
+            pg_score=pg_score,
+            yara_score=yara_score,
+            evidence=evidence,
+            route_reason=route_reason,
+            has_hold_hint=has_hold_hint,
+            has_review_hint=has_review_hint,
+            yara_strong=yara_strong,
+            yara_moderate=yara_moderate,
+            pg_strong=pg_strong,
+            pg_moderate=pg_moderate,
+        )
         return CheapChunkDecision(
             decision=decision,
             risk_score=risk_score,
@@ -222,6 +256,42 @@ class CheapRouter:
             findings=evidence,
             reason=reason,
         )
+
+
+def _log_route_decision(
+    *,
+    decision: str,
+    risk_score: float,
+    pg_score: float,
+    yara_score: float,
+    evidence: Sequence[YaraEvidence],
+    route_reason: str,
+    has_hold_hint: bool = False,
+    has_review_hint: bool = False,
+    yara_strong: bool = False,
+    yara_moderate: bool = False,
+    pg_strong: bool = False,
+    pg_moderate: bool = False,
+) -> None:
+    payload = {
+        "decision": decision,
+        "route_reason": route_reason,
+        "risk_score": round(risk_score, 2),
+        "pg_score": round(pg_score, 4),
+        "yara_score": round(yara_score, 2),
+        "yara_findings": len(evidence),
+        "yara_categories": sorted({e.category for e in evidence}),
+        "has_hold_hint": has_hold_hint,
+        "has_review_hint": has_review_hint,
+        "yara_strong": yara_strong,
+        "yara_moderate": yara_moderate,
+        "pg_strong": pg_strong,
+        "pg_moderate": pg_moderate,
+    }
+    if decision == DECISION_SAFE:
+        logger.debug("cheap_router_decision", extra=payload)
+    else:
+        logger.info("cheap_router_decision", extra=payload)
 
 
 def _compute_yara_score(evidence: Sequence[YaraEvidence]) -> float:
