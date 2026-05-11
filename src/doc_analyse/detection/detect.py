@@ -151,11 +151,13 @@ class CheapRouter:
         yara_findings: Sequence[DetectionFinding],
         pg_score: float,
     ) -> CheapChunkDecision:
-        # Accept YaraEvidence directly (from tests) or DetectionFinding (from production)
+        # YaraEvidence.from_finding() returns its argument unchanged if it
+        # already is a YaraEvidence (line 79-80) — so we can call it
+        # unconditionally instead of branching on isinstance here.
         evidence: tuple[YaraEvidence, ...] = tuple(
-            f if isinstance(f, YaraEvidence) else YaraEvidence.from_finding(f)
-            for f in yara_findings
+            YaraEvidence.from_finding(f) for f in yara_findings
         )
+
         raw_pg_score = pg_score
         pg_score = max(0.0, min(1.0, pg_score))
         if pg_score != raw_pg_score:
@@ -164,8 +166,18 @@ class CheapRouter:
                 extra={"input_pg_score": raw_pg_score, "pg_score": pg_score},
             )
 
-        # Category-combination rules override numeric scoring
-        combo_decision = _check_category_combination_rules(evidence, pg_score)
+        # A signal is only considered if its weight is non-zero. Compute
+        # this up front so the combo-rule check below can respect it too.
+        yara_enabled = self.yara_weight > 0
+        pg_enabled = self.pg_weight > 0
+
+        # Category-combination rules override numeric scoring, but they
+        # ARE YARA-derived signals — when YARA is disabled by weight=0,
+        # skip them so the user's "ignore YARA" intent is honored end-to-end.
+        if yara_enabled:
+            combo_decision = _check_category_combination_rules(evidence, pg_score)
+        else:
+            combo_decision = None
         if combo_decision is not None:
             yara_score = _compute_yara_score(evidence)
             risk_score = self._compute_risk_score(yara_score, pg_score)
@@ -187,39 +199,51 @@ class CheapRouter:
                 reason=reason,
             )
 
-        # Collect advisory route hints — floor for final decision, not authoritative
-        has_hold_hint = any(e.route_hint == "hold" for e in evidence)
-        has_review_hint = any(e.route_hint == "review" for e in evidence)
+        # Route hints carried on YARA findings. Honor them as decision
+        # FLOORS: a "hold" hint means at least HOLD, a "review" hint means
+        # at least REVIEW. Hints are also gated by yara_enabled — if the
+        # user disabled YARA, its hints don't push the decision either.
+        if yara_enabled:
+            has_hold_hint = any(e.route_hint == "hold" for e in evidence)
+            has_review_hint = any(e.route_hint == "review" for e in evidence)
+        else:
+            has_hold_hint = False
+            has_review_hint = False
 
         yara_score = _compute_yara_score(evidence)
 
-        yara_strong = (
-            self.yara_weight > 0
-            and yara_score >= self.yara_hold_threshold
-        )
-        yara_moderate = (
-            self.yara_weight > 0
-            and yara_score >= self.yara_review_threshold
-        )
-        pg_strong = (
-            self.pg_weight > 0
-            and pg_score >= self.pg_hold_threshold
-        )
-        pg_moderate = (
-            self.pg_weight > 0
-            and pg_score >= self.pg_review_threshold
-        )
+        yara_strong = yara_enabled and yara_score >= self.yara_hold_threshold
+        yara_moderate = yara_enabled and yara_score >= self.yara_review_threshold
+        pg_strong = pg_enabled and pg_score >= self.pg_hold_threshold
+        pg_moderate = pg_enabled and pg_score >= self.pg_review_threshold
 
         risk_score = self._compute_risk_score(yara_score, pg_score)
 
+        # Name each piece of the decision tree so it reads top-to-bottom.
+        has_moderate_signal = yara_moderate or pg_moderate
+        crosses_risk_floor = risk_score >= 20.0
+
+        # Decision tree (first match wins). Each branch records its own
+        # route_reason so logs and reasons surface the actual cause.
         if yara_strong or pg_strong:
             decision = DECISION_HOLD
             route_reason = "strong_signal"
             reason = _build_reason(yara_score, pg_score, evidence, yara_strong, pg_strong)
-        elif yara_moderate or pg_moderate or risk_score >= 20.0 or has_hold_hint or has_review_hint:
-            decision = DECISION_REVIEW
-            route_reason = "moderate_signal_or_hint"
+        elif has_hold_hint:
+            # A rule explicitly asked for HOLD via route_hint="hold". Honor it.
+            decision = DECISION_HOLD
+            route_reason = "route_hint_hold"
             reason = _build_reason(yara_score, pg_score, evidence, yara_moderate, pg_moderate)
+            reason += " | hint=hold"
+        elif has_moderate_signal or crosses_risk_floor:
+            decision = DECISION_REVIEW
+            route_reason = "moderate_signal_or_risk_floor"
+            reason = _build_reason(yara_score, pg_score, evidence, yara_moderate, pg_moderate)
+        elif has_review_hint:
+            decision = DECISION_REVIEW
+            route_reason = "route_hint_review"
+            reason = _build_reason(yara_score, pg_score, evidence, False, False)
+            reason += " | hint=review"
         elif risk_score >= 10.0:
             decision = DECISION_REVIEW
             route_reason = "risk_score_floor"
@@ -309,7 +333,13 @@ def _compute_yara_score(evidence: Sequence[YaraEvidence]) -> float:
     # This prevents repeated-match inflation when the same rule fires multiple times.
     best_by_category: dict[str, float] = {}
     for e in evidence:
-        w = e.weight if e.weight > 0 else _SEVERITY_WEIGHTS.get(e.severity.strip().lower(), 10.0)
+        # Prefer the rule's explicit weight; fall back to a severity-derived
+        # weight only when the rule didn't set one (weight defaults to 0.0).
+        if e.weight > 0:
+            w = e.weight
+        else:
+            severity = e.severity.strip().lower()
+            w = _SEVERITY_WEIGHTS.get(severity, 10.0)
         if w > best_by_category.get(e.category, 0.0):
             best_by_category[e.category] = w
     return min(100.0, sum(best_by_category.values()))

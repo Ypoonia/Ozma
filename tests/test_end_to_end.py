@@ -650,17 +650,22 @@ class TestWeaknesses:
         assert "\u200b" not in normalized
         assert "\u200c" not in normalized
 
-    def test_router_route_hint_is_advisory_not_authoritative(self, log):
-        """route_hint='hold' should bump to REVIEW, not trigger immediate HOLD."""
+    def test_router_route_hint_hold_is_authoritative_floor(self, log):
+        """route_hint='hold' is now an authoritative floor — it escalates to
+        HOLD even when numeric signals are weak. The previous "advisory only"
+        semantics were misleading: a YARA rule author setting
+        ``route_hint="hold"`` reasonably expects it to *cause* a HOLD.
+        Concrete impact: ``tool_hijack`` (weight 35) and ``authority_claim``
+        (weight 30) — both rules whose author meant "this should hold"."""
         from doc_analyse.detection.detect import YaraEvidence
 
         router = CheapRouter()
-        # Single medium severity finding with route_hint='hold' — should be REVIEW not HOLD
+        # Single medium-severity finding with route_hint='hold' — must HOLD.
         evidence = [
             YaraEvidence(
                 rule_id="some_rule",
                 category="test_cat",
-                severity="medium",  # weight=10
+                severity="medium",  # weight=10 (below review threshold 15)
                 span="test",
                 start_char=0,
                 end_char=4,
@@ -670,13 +675,15 @@ class TestWeaknesses:
         ]
         decision = router.route(evidence, pg_score=0.0)
         log.stage(
-            "ROUTE_HINT_ADVISORY",
-            f"Medium+hold_hint → decision={decision.decision} (should be REVIEW, not HOLD)",
+            "ROUTE_HINT_HOLD",
+            f"Medium+hold_hint → decision={decision.decision}",
             yara_score=decision.yara_score,
         )
-        # With weight=10, numeric score is 10 — below review threshold 15.
-        # route_hint='hold' bumps to REVIEW.
-        assert decision.decision == DECISION_REVIEW, "route_hint='hold' should bump to REVIEW, not HOLD"
+        assert decision.decision == DECISION_HOLD, (
+            "route_hint='hold' must escalate to HOLD even when numeric signals are weak"
+        )
+        # The reason string surfaces the hint so logs/UI show the cause.
+        assert "hint=hold" in decision.reason
 
     def test_chunk_offset_integrity(self, log):
         """Findings must have correct character offsets within the original chunk text."""
