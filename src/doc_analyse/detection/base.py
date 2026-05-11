@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Iterable, Optional
 
 from doc_analyse.detection.models import DetectionFinding
@@ -82,60 +81,3 @@ class BaseDetector(ABC):
             score=score,
             metadata=resolved_metadata,
         )
-
-
-class ParallelDetector(BaseDetector):
-    """Runs cheap detectors independently for stateless worker-style fanout."""
-
-    def __init__(
-        self, detectors: Iterable[BaseDetector], max_workers: Optional[int] = None
-    ) -> None:
-        self.detectors = tuple(detectors)
-        self.max_workers = max_workers
-
-    def detect(self, chunk: TextChunk) -> tuple[DetectionFinding, ...]:
-        return self.detect_many((chunk,))
-
-    def detect_many(self, chunks: Iterable[TextChunk]) -> tuple[DetectionFinding, ...]:
-        chunk_list = tuple(chunks)
-        if not self.detectors or not chunk_list:
-            return ()
-
-        findings = []
-        with ThreadPoolExecutor(max_workers=self.max_workers or len(self.detectors)) as executor:
-            futures = {
-                executor.submit(detector.detect, chunk): (detector, chunk)
-                for chunk in chunk_list
-                for detector in self.detectors
-            }
-            for future in as_completed(futures):
-                detector, chunk = futures[future]
-                try:
-                    findings.extend(future.result())
-                except Exception as exc:
-                    findings.append(_detector_error_finding(chunk, detector, exc))
-
-        return self._finalize_findings(findings)
-
-
-def _detector_error_finding(
-    chunk: TextChunk,
-    detector: BaseDetector,
-    exc: Exception,
-) -> DetectionFinding:
-    detector_name = detector.__class__.__name__
-    return BaseDetector._build_finding(
-        chunk=chunk,
-        span=chunk.text,
-        category="detector_error",
-        severity="medium",
-        reason=f"{detector_name} failed; send this chunk to LLM validation.",
-        rule_id=f"{detector_name.lower()}_error",
-        start_char=chunk.start_char,
-        end_char=chunk.end_char,
-        requires_llm_validation=True,
-        metadata={
-            "detector": detector_name,
-            "error": str(exc),
-        },
-    )

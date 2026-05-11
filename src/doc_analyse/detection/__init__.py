@@ -1,4 +1,4 @@
-from doc_analyse.detection.base import BaseDetector, ParallelDetector
+from doc_analyse.detection.base import BaseDetector
 from doc_analyse.detection.models import DetectionFinding
 from doc_analyse.detection.prompt_guard import (
     DEFAULT_PROMPT_GUARD_MODEL,
@@ -17,7 +17,6 @@ __all__ = [
     "DEFAULT_PROMPT_GUARD_MODEL",
     "DEFAULT_YARA_RULES_FILE",
     "DetectionFinding",
-    "ParallelDetector",
     "PromptGuardDependencyError",
     "PromptGuardDetector",
     "YaraDetector",
