@@ -27,7 +27,16 @@ _SEVERITY_WEIGHTS: Mapping[str, float] = {
 # Category-combination routing rules.
 # Each entry is (required_categories, pg_gate, decision).
 # pg_gate None = decision fires regardless of pg_score.
-# pg_gate 0.10 = fires only when pg_score < 0.10.
+# pg_gate numeric = fires only when pg_score < gate (for "alone" downgrade rules).
+#
+# Note: a previous `(frozenset({"topic_mention"}), 0.10, DECISION_SAFE)` entry
+# existed to downgrade meta-discussion documents to SAFE, but no YARA rule in
+# default.yara ever produced the "topic_mention" category, so the rule was
+# unreachable in production. Removed in favour of aligning config with the
+# fail-closed direction set by the Layer 1 floor. The "exact match" / pg_gate
+# code path in _check_category_combination_rules is kept intact so the
+# downgrade semantic can be reintroduced cheaply if a topic_mention YARA rule
+# is added later.
 _CATEGORY_COMBINATION_RULES: tuple[tuple[frozenset[str], float | None, str], ...] = (
     # tool_hijack + instruction_override → always HOLD
     (frozenset({"tool_hijack", "instruction_override"}), None, DECISION_HOLD),
@@ -36,8 +45,6 @@ _CATEGORY_COMBINATION_RULES: tuple[tuple[frozenset[str], float | None, str], ...
     (frozenset({"secret_exfiltration", "instruction_override"}), None, DECISION_HOLD),
     # secret_exfiltration + tool_hijack → always HOLD
     (frozenset({"secret_exfiltration", "tool_hijack"}), None, DECISION_HOLD),
-    # topic_mention ALONE (no other categories) + pg_score < 0.10 → SAFE
-    (frozenset({"topic_mention"}), 0.10, DECISION_SAFE),
 )
 
 

@@ -354,18 +354,23 @@ class TestCategoryCombinationRouting:
         decision = router.route(evidence, 0.0)
         assert decision.decision == DECISION_HOLD
 
-    # topic_mention alone + pg_score < 0.10 → SAFE
-    def test_topic_mention_alone_with_low_pg_is_safe(self):
+    # topic_mention category routes via numeric scoring only — the downgrade
+    # combo rule was removed because no YARA rule produced this category in
+    # production. Tests below document the current (numeric-scoring) behavior
+    # so a future re-introduction of the rule is a visible change.
+    def test_topic_mention_alone_with_low_pg_uses_numeric_scoring(self):
         router = CheapRouter()
         evidence = [self._evidence_for_categories("topic_rule", "topic_mention")]
+        # category="topic_mention", severity="high" (default) → weight 25 →
+        # yara_score 25 >= 15 yara_review_threshold → REVIEW.
         decision = router.route(evidence, 0.05)
-        assert decision.decision == DECISION_SAFE
+        assert decision.decision == DECISION_REVIEW
 
     def test_topic_mention_alone_with_high_pg_routes_to_review(self):
         router = CheapRouter()
         evidence = [self._evidence_for_categories("topic_rule", "topic_mention", "low")]
-        # pg_score 0.20 >= 0.10, topic_mention rule does not fire
-        # Low severity (5) -> yara_score=5, yara_weight=0.5 -> risk=2.5 + 10.0 = 12.5 >= 10 -> REVIEW
+        # Low severity (5) → yara_score 5, yara_weight=0.5 → risk=2.5 + pg*100*0.5=10.0
+        # = 12.5; >= risk_score_floor 10 → REVIEW.
         decision = router.route(evidence, 0.20)
         assert decision.decision == DECISION_REVIEW
 

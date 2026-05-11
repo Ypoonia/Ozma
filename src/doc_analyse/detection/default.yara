@@ -140,12 +140,24 @@ rule unsafe_mutation_request {
     requires_llm_validation = true
     reason     = "Requests write, delete, export, send, or mutation behavior."
   strings:
-    /* subject (assistant/agent/model) within 80 chars of mutation verb */
-    $a = /\b(assistant|chatgpt|model|agent|you)\b[\s\S]{0,80}\b(write|update|delete|remove|create|export|send)\b[\s\S]{0,80}\b(file|database|record|email|message|url|endpoint|csv|xlsx)\b/ nocase
-    /* tool/function call within 60 chars of mutation verb */
-    $b = /\b(use|call|invoke|run)\b[\s\S]{0,60}\b(tool|function|api|endpoint)\b[\s\S]{0,80}\b(write|update|delete|remove|create|export|send)\b/ nocase
-    /* mutation verb within 60 chars of target object */
-    $c = /\b(write|update|delete|remove|create|export|send)\b[\s\S]{0,60}\b(file|database|record|email|message|url|endpoint|csv|xlsx)\b/ nocase
+    /* Proximity windows tightened from 60/80 to 15 chars to keep the rule
+       imperative-shaped — direct attacks like "Write the password file"
+       (write→file ≈ 14 chars) still match, while narrative business text
+       like "You should write a comprehensive email to HR about the policy
+       update" (write→email ≈ 17 chars) no longer fires. */
+    /* subject (assistant/agent/model) within 15 chars of mutation verb */
+    $a = /\b(assistant|chatgpt|model|agent|you)\b[\s\S]{0,15}\b(write|update|delete|remove|create|export|send)\b[\s\S]{0,15}\b(file|database|record|email|message|url|endpoint|csv|xlsx)\b/ nocase
+    /* tool/function call within 15 chars of mutation verb */
+    $b = /\b(use|call|invoke|run)\b[\s\S]{0,15}\b(tool|function|api|endpoint)\b[\s\S]{0,15}\b(write|update|delete|remove|create|export|send)\b/ nocase
+    /* mutation verb within 15 chars of generic target object */
+    $c = /\b(write|update|delete|remove|create|export|send)\b[\s\S]{0,15}\b(file|database|record|email|message|url|endpoint|csv|xlsx)\b/ nocase
+    /* Mutation verb within 80 chars of a tabular/structured file *name*
+       (e.g. "Create the following files... database_write_targets.csv").
+       Filenames are intrinsically suspicious targets — benign business
+       prose rarely contains "create *.csv" / "export *.xlsx" patterns,
+       so we keep this proximity wide to catch corpus-style exfiltration
+       attacks that span multiple lines. */
+    $d = /\b(write|update|delete|remove|create|export|send|populate)\b[\s\S]{0,80}\b[\w.-]+\.(csv|xlsx|json|yaml|tsv|sql)\b/ nocase
   condition:
     any of them
 }
