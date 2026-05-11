@@ -166,8 +166,18 @@ class CheapRouter:
                 extra={"input_pg_score": raw_pg_score, "pg_score": pg_score},
             )
 
-        # Category-combination rules override numeric scoring
-        combo_decision = _check_category_combination_rules(evidence, pg_score)
+        # A signal is only considered if its weight is non-zero. Compute
+        # this up front so the combo-rule check below can respect it too.
+        yara_enabled = self.yara_weight > 0
+        pg_enabled = self.pg_weight > 0
+
+        # Category-combination rules override numeric scoring, but they
+        # ARE YARA-derived signals — when YARA is disabled by weight=0,
+        # skip them so the user's "ignore YARA" intent is honored end-to-end.
+        if yara_enabled:
+            combo_decision = _check_category_combination_rules(evidence, pg_score)
+        else:
+            combo_decision = None
         if combo_decision is not None:
             yara_score = _compute_yara_score(evidence)
             risk_score = self._compute_risk_score(yara_score, pg_score)
@@ -189,16 +199,18 @@ class CheapRouter:
                 reason=reason,
             )
 
-        # Collect advisory route hints — floor for final decision, not authoritative
-        has_hold_hint = any(e.route_hint == "hold" for e in evidence)
-        has_review_hint = any(e.route_hint == "review" for e in evidence)
+        # Route hints carried on YARA findings. Honor them as decision
+        # FLOORS: a "hold" hint means at least HOLD, a "review" hint means
+        # at least REVIEW. Hints are also gated by yara_enabled — if the
+        # user disabled YARA, its hints don't push the decision either.
+        if yara_enabled:
+            has_hold_hint = any(e.route_hint == "hold" for e in evidence)
+            has_review_hint = any(e.route_hint == "review" for e in evidence)
+        else:
+            has_hold_hint = False
+            has_review_hint = False
 
         yara_score = _compute_yara_score(evidence)
-
-        # A signal is only considered if its weight is non-zero. Pull the
-        # weight check out once so each threshold comparison reads cleanly.
-        yara_enabled = self.yara_weight > 0
-        pg_enabled = self.pg_weight > 0
 
         yara_strong = yara_enabled and yara_score >= self.yara_hold_threshold
         yara_moderate = yara_enabled and yara_score >= self.yara_review_threshold
@@ -207,19 +219,31 @@ class CheapRouter:
 
         risk_score = self._compute_risk_score(yara_score, pg_score)
 
-        # Name each piece of the REVIEW condition so the elif reads as a sentence.
+        # Name each piece of the decision tree so it reads top-to-bottom.
         has_moderate_signal = yara_moderate or pg_moderate
         crosses_risk_floor = risk_score >= 20.0
-        has_route_hint = has_hold_hint or has_review_hint
 
+        # Decision tree (first match wins). Each branch records its own
+        # route_reason so logs and reasons surface the actual cause.
         if yara_strong or pg_strong:
             decision = DECISION_HOLD
             route_reason = "strong_signal"
             reason = _build_reason(yara_score, pg_score, evidence, yara_strong, pg_strong)
-        elif has_moderate_signal or crosses_risk_floor or has_route_hint:
-            decision = DECISION_REVIEW
-            route_reason = "moderate_signal_or_hint"
+        elif has_hold_hint:
+            # A rule explicitly asked for HOLD via route_hint="hold". Honor it.
+            decision = DECISION_HOLD
+            route_reason = "route_hint_hold"
             reason = _build_reason(yara_score, pg_score, evidence, yara_moderate, pg_moderate)
+            reason += " | hint=hold"
+        elif has_moderate_signal or crosses_risk_floor:
+            decision = DECISION_REVIEW
+            route_reason = "moderate_signal_or_risk_floor"
+            reason = _build_reason(yara_score, pg_score, evidence, yara_moderate, pg_moderate)
+        elif has_review_hint:
+            decision = DECISION_REVIEW
+            route_reason = "route_hint_review"
+            reason = _build_reason(yara_score, pg_score, evidence, False, False)
+            reason += " | hint=review"
         elif risk_score >= 10.0:
             decision = DECISION_REVIEW
             route_reason = "risk_score_floor"
