@@ -114,7 +114,10 @@ class YaraDetector(BaseDetector):
     """YARA-based cheap detector for prompt-injection-like evidence."""
 
     def __init__(self, compiled: Optional[Any] = None) -> None:
-        self._compiled = compiled if compiled is not None else _DEFAULT_COMPILED_RULES
+        if compiled is not None:
+            self._compiled = compiled
+        else:
+            self._compiled = _DEFAULT_COMPILED_RULES
 
     @classmethod
     def from_file(cls, path: Union[str, Path]) -> YaraDetector:
@@ -187,7 +190,10 @@ class YaraDetector(BaseDetector):
 
                     # Normalize YARA weight to 0.0-1.0 range for the generic score field.
                     # Raw weight lives in metadata["yara_weight"] for the router.
-                    normalized_score = min(1.0, weight / 100.0) if weight > 0 else None
+                    if weight > 0:
+                        normalized_score = min(1.0, weight / 100.0)
+                    else:
+                        normalized_score = None
 
                     findings.append(
                         self._build_finding(
