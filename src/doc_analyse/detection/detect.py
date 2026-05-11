@@ -151,11 +151,13 @@ class CheapRouter:
         yara_findings: Sequence[DetectionFinding],
         pg_score: float,
     ) -> CheapChunkDecision:
-        # Accept YaraEvidence directly (from tests) or DetectionFinding (from production)
+        # YaraEvidence.from_finding() returns its argument unchanged if it
+        # already is a YaraEvidence (line 79-80) — so we can call it
+        # unconditionally instead of branching on isinstance here.
         evidence: tuple[YaraEvidence, ...] = tuple(
-            f if isinstance(f, YaraEvidence) else YaraEvidence.from_finding(f)
-            for f in yara_findings
+            YaraEvidence.from_finding(f) for f in yara_findings
         )
+
         raw_pg_score = pg_score
         pg_score = max(0.0, min(1.0, pg_score))
         if pg_score != raw_pg_score:
@@ -193,30 +195,28 @@ class CheapRouter:
 
         yara_score = _compute_yara_score(evidence)
 
-        yara_strong = (
-            self.yara_weight > 0
-            and yara_score >= self.yara_hold_threshold
-        )
-        yara_moderate = (
-            self.yara_weight > 0
-            and yara_score >= self.yara_review_threshold
-        )
-        pg_strong = (
-            self.pg_weight > 0
-            and pg_score >= self.pg_hold_threshold
-        )
-        pg_moderate = (
-            self.pg_weight > 0
-            and pg_score >= self.pg_review_threshold
-        )
+        # A signal is only considered if its weight is non-zero. Pull the
+        # weight check out once so each threshold comparison reads cleanly.
+        yara_enabled = self.yara_weight > 0
+        pg_enabled = self.pg_weight > 0
+
+        yara_strong = yara_enabled and yara_score >= self.yara_hold_threshold
+        yara_moderate = yara_enabled and yara_score >= self.yara_review_threshold
+        pg_strong = pg_enabled and pg_score >= self.pg_hold_threshold
+        pg_moderate = pg_enabled and pg_score >= self.pg_review_threshold
 
         risk_score = self._compute_risk_score(yara_score, pg_score)
+
+        # Name each piece of the REVIEW condition so the elif reads as a sentence.
+        has_moderate_signal = yara_moderate or pg_moderate
+        crosses_risk_floor = risk_score >= 20.0
+        has_route_hint = has_hold_hint or has_review_hint
 
         if yara_strong or pg_strong:
             decision = DECISION_HOLD
             route_reason = "strong_signal"
             reason = _build_reason(yara_score, pg_score, evidence, yara_strong, pg_strong)
-        elif yara_moderate or pg_moderate or risk_score >= 20.0 or has_hold_hint or has_review_hint:
+        elif has_moderate_signal or crosses_risk_floor or has_route_hint:
             decision = DECISION_REVIEW
             route_reason = "moderate_signal_or_hint"
             reason = _build_reason(yara_score, pg_score, evidence, yara_moderate, pg_moderate)
@@ -309,7 +309,13 @@ def _compute_yara_score(evidence: Sequence[YaraEvidence]) -> float:
     # This prevents repeated-match inflation when the same rule fires multiple times.
     best_by_category: dict[str, float] = {}
     for e in evidence:
-        w = e.weight if e.weight > 0 else _SEVERITY_WEIGHTS.get(e.severity.strip().lower(), 10.0)
+        # Prefer the rule's explicit weight; fall back to a severity-derived
+        # weight only when the rule didn't set one (weight defaults to 0.0).
+        if e.weight > 0:
+            w = e.weight
+        else:
+            severity = e.severity.strip().lower()
+            w = _SEVERITY_WEIGHTS.get(severity, 10.0)
         if w > best_by_category.get(e.category, 0.0):
             best_by_category[e.category] = w
     return min(100.0, sum(best_by_category.values()))

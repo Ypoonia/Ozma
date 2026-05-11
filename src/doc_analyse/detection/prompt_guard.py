@@ -197,7 +197,12 @@ def _normalise_scores(raw_output: Any) -> dict[str, float]:
 
         label = str(row.get("label", "")).strip().lower()
         score = row.get("score")
-        if not isinstance(score, (float, int)) or isinstance(score, bool):
+        # Reject anything that isn't a real number. Note: bool is a subclass
+        # of int in Python (`True == 1`), so we have to reject it explicitly
+        # to avoid treating True/False as scores.
+        if not isinstance(score, (float, int)):
+            continue
+        if isinstance(score, bool):
             continue
 
         # Handle both descriptive labels (malicious/benign) and index labels (LABEL_1/LABEL_0).
