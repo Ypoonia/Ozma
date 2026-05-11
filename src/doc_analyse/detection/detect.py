@@ -24,42 +24,29 @@ _SEVERITY_WEIGHTS: Mapping[str, float] = {
 }
 
 
-# Category-combination routing rules.
-# Each entry is (required_categories, pg_gate, decision).
-# pg_gate None = decision fires regardless of pg_score.
-# pg_gate 0.10 = fires only when pg_score < 0.10.
-_CATEGORY_COMBINATION_RULES: tuple[tuple[frozenset[str], float | None, str], ...] = (
+# Category-combination routing rules. Each entry maps a set of required
+# YARA categories that, when ALL present in the evidence, force the given
+# decision regardless of numeric scoring. Extra categories beyond the
+# required set don't block the rule (subset match).
+_CATEGORY_COMBINATION_RULES: tuple[tuple[frozenset[str], str], ...] = (
     # tool_hijack + instruction_override → always HOLD
-    (frozenset({"tool_hijack", "instruction_override"}), None, DECISION_HOLD),
+    (frozenset({"tool_hijack", "instruction_override"}), DECISION_HOLD),
     # secret_exfiltration + instruction_override → always HOLD
-    # covers hidden_prompt_exfiltration (category=secret_exfiltration) + instruction_override
-    (frozenset({"secret_exfiltration", "instruction_override"}), None, DECISION_HOLD),
+    # (covers hidden_prompt_exfiltration which uses category=secret_exfiltration)
+    (frozenset({"secret_exfiltration", "instruction_override"}), DECISION_HOLD),
     # secret_exfiltration + tool_hijack → always HOLD
-    (frozenset({"secret_exfiltration", "tool_hijack"}), None, DECISION_HOLD),
-    # topic_mention ALONE (no other categories) + pg_score < 0.10 → SAFE
-    (frozenset({"topic_mention"}), 0.10, DECISION_SAFE),
+    (frozenset({"secret_exfiltration", "tool_hijack"}), DECISION_HOLD),
 )
 
 
 def _check_category_combination_rules(
     evidence: Sequence[YaraEvidence],
-    pg_score: float,
 ) -> str | None:
-    """Check category-combination rules first. Returns decision or None."""
+    """Return the first matching combo-rule decision, or None."""
     categories = {e.category for e in evidence}
-    for required_categories, pg_gate, decision in _CATEGORY_COMBINATION_RULES:
-        # Exact equality for "alone" rules (topic_mention), subset for combo rules
+    for required_categories, decision in _CATEGORY_COMBINATION_RULES:
         if required_categories.issubset(categories):
-            if len(required_categories) == len(categories):
-                # Exact match: single-category "alone" rules
-                if pg_gate is None:
-                    return decision
-                if pg_gate == 0.10 and pg_score < 0.10:
-                    return decision
-            else:
-                # Superset match: multi-category combo rules
-                if pg_gate is None:
-                    return decision
+            return decision
     return None
 
 
@@ -165,7 +152,7 @@ class CheapRouter:
             )
 
         # Category-combination rules override numeric scoring
-        combo_decision = _check_category_combination_rules(evidence, pg_score)
+        combo_decision = _check_category_combination_rules(evidence)
         if combo_decision is not None:
             yara_score = _compute_yara_score(evidence)
             risk_score = self._compute_risk_score(yara_score, pg_score)

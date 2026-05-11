@@ -155,24 +155,20 @@ class PromptGuardDetector(BaseDetector):
 
 
 def _log_pg_load_failure(exc: Exception) -> None:
-    """Log a Prompt Guard load failure with actionable error message."""
-    error_type = type(exc).__name__
-    message = str(exc).lower()
-    hint = "set HF_TOKEN environment variable"
-    if "401" in message or "unauthorized" in message:
-        hint = "Hugging Face token required for this gated model. Set: export HF_TOKEN=hf_..."
-    elif "403" in message or "forbidden" in message:
-        hint = "Hugging Face token missing or lacks model access. Set: export HF_TOKEN=hf_..."
-    elif "connection" in message or "network" in message:
-        hint = "Check internet connection or Hugging Face accessibility."
-    elif "not found" in message or "does not exist" in message:
-        hint = (
-            "Model name may have changed. "
-            "Check meta-llama/Llama-Prompt-Guard-2-86M availability."
-        )
+    """Log a Prompt Guard load failure with the exception details.
+
+    The exception message is the only reliable signal — anything more
+    specific (HTTP status pattern matching, "is this a 401" guesses) is
+    speculative and frequently wrong as upstream error formats change.
+    Callers diagnose from error_type + error_message directly.
+    """
     logger.warning(
         "prompt_guard_classifier_load_failed",
-        extra={"error_type": error_type, "error_message": str(exc), "hint": hint},
+        extra={
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "hint": "Check HF_TOKEN, network connectivity, and model availability.",
+        },
     )
 
 

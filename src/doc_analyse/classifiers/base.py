@@ -340,7 +340,10 @@ def _attempt_truncation_repairs(text: str) -> Optional[dict[str, Any]]:
     for _ in range(_MAX_TRUNCATION_REPAIR_STEPS):
         try:
             result = json.loads(candidate)
-        except (json.JSONDecodeError, ValueError) as exc:
+        # RecursionError surfaces from json.loads on depth-bomb payloads
+        # (thousands of nested brackets); TypeError surfaces if a caller
+        # passes a non-string somehow. Both are bail-out cases.
+        except (json.JSONDecodeError, ValueError, RecursionError, TypeError) as exc:
             pos = getattr(exc, "pos", None)
             if pos is None or pos <= 0 or pos > len(candidate):
                 return None
@@ -359,10 +362,16 @@ def _attempt_truncation_repairs(text: str) -> Optional[dict[str, Any]]:
 
 
 def _safe_json_loads(text: str) -> Any:
-    """``json.loads`` that returns None on failure. Never raises."""
+    """``json.loads`` that returns None on failure. Never raises.
+
+    Catches the full set of failure modes a real LLM response can produce:
+    ``JSONDecodeError`` (parent: ValueError), explicit ``ValueError``,
+    ``TypeError`` (non-string input), and ``RecursionError`` (depth bombs
+    from deeply nested brackets — json.loads recurses).
+    """
     try:
         return json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, RecursionError, TypeError):
         return None
 
 
