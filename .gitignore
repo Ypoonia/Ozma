@@ -9,3 +9,5 @@ dist/
 build/
 .env
 e2e_reports/
+.coverage
+htmlcov/

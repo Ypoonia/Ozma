@@ -65,11 +65,15 @@ rule hidden_prompt_exfiltration {
     $c = /\b(show|print|reveal|dump|list|expose)\b[\s\S]{0,80}\bhidden\s+instructions?\b/ nocase
     /* exfil verb THEN private tool schemas (within 80 chars) */
     $d = /\b(show|print|reveal|dump|list|expose)\b[\s\S]{0,80}\bprivate\s+tool\s+schemas?\b/ nocase
-    /* corpus wording: include available prompt/schema material in output */
-    $e = /\b(include|collect|copy|extract|export|list)\b[\s\S]{0,120}\b(any\s+available\s+)?(system|developer)\s+prompts?\b/ nocase
-    $f = /\b(include|collect|copy|extract|export|list)\b[\s\S]{0,120}\bhidden\s+instructions?\b/ nocase
-    $g = /\b(include|collect|copy|extract|export|list)\b[\s\S]{0,120}\bprivate\s+tool\s+schemas?\b/ nocase
+    /* corpus wording: include/append/dump prompt/schema material in output */
+    $e = /\b(include|collect|copy|extract|export|list|append|attach|embed|dump)\b[\s\S]{0,120}\b(any\s+available\s+)?(system|developer)\s+prompts?\b/ nocase
+    $f = /\b(include|collect|copy|extract|export|list|append|attach|embed|dump)\b[\s\S]{0,120}\bhidden\s+instructions?\b/ nocase
+    $g = /\b(include|collect|copy|extract|export|list|append|attach|embed|dump)\b[\s\S]{0,120}\bprivate\s+tool\s+schemas?\b/ nocase
+    /* known prompt/schema artefact filenames (exact) */
     $h = /\b(all_internal_prompts\.xlsx|hidden_tool_schemas\.csv)\b/ nocase
+    /* generalized: exfil verb within 80 chars of any filename whose stem
+       references prompts/instructions/schemas, in a tabular/text format */
+    $i = /\b(include|collect|copy|extract|export|list|append|attach|embed|dump|forward|send|share)\b[\s\S]{0,80}\b\w*(prompts?|instructions?|schemas?)\w*\.(xlsx|csv|json|yaml|yml|txt|tsv)\b/ nocase
   condition:
     any of them
 }
@@ -113,12 +117,17 @@ rule tool_hijack {
     requires_llm_validation = true
     reason     = "Attempts to make an agent call tools from uploaded content."
   strings:
+    /* legacy: bare 'write tool' phrasings */
     $a = /call\s+(the\s+)?(available\s+)?write\s+tool/ nocase
     $b = /use\s+(the\s+)?(available\s+)?write\s+tool/ nocase
     $c = /invoke\s+(the\s+)?(available\s+)?write\s+tool/ nocase
     $d = /run\s+(the\s+)?(available\s+)?write\s+tool/ nocase
+    /* generalized: imperative verb + any tool-name identifier whose stem
+       implies a mutation/exfil operation (write|delete|send|post|exec|
+       dispatch|upload|put|patch|destroy|drop|modify|run|exfil) */
+    $e = /\b(use|call|invoke|run|execute)\s+(the\s+)?(available\s+)?[a-z0-9_]*(write|delete|send|post|exec|dispatch|upload|put|patch|destroy|drop|modify|exfil)[a-z0-9_]*\s+tool\b/ nocase
   condition:
-    $a or $b or $c or $d
+    any of them
 }
 
 rule unsafe_mutation_request {
@@ -189,6 +198,10 @@ rule authority_claim {
     $b = /new\s+authority/ nocase
     $c = /mandatory\s+instruction/ nocase
     $d = /supersedes?\s+any\s+previous\s+instruction/ nocase
+    /* First-person authority claim: "I am the system administrator/root/owner/..." */
+    $e = /\bI\s+am\s+(the\s+)?(system\s+)?(admin(istrator)?|owner|developer|sysadmin|root|operator|maintainer)\b/ nocase
+    /* Imperative obedience demand: "you must obey my command" */
+    $f = /\byou\s+must\s+obey\s+(my|me|this|these)\b/ nocase
   condition:
-    $a or $b or $c or $d
+    any of them
 }
